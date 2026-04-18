@@ -11,7 +11,7 @@ import studentRoutes  from '../../services/students/src/routes/students.js'
 import reportRoutes   from '../../services/reports/src/routes/reports.js'
 
 // ── Superadmin seed (was in auth service index.js) ───────────
-import User from '../services/auth/src/models/User.js'
+import User from '../../services/auth/src/models/User.js'
 
 const app  = express()
 const PORT = process.env.PORT || process.env.GATEWAY_PORT || 3000
