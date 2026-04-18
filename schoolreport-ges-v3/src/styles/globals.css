@@ -1,0 +1,89 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, Arial, sans-serif;
+    font-size: 14px;
+    color: #1a1a1a;
+    background: #f4f6fb;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Better tap targets on mobile */
+  button, [role="button"] { touch-action: manipulation; }
+
+  /* Prevent iOS zoom on input focus */
+  input, select, textarea {
+    font-size: 16px !important;  /* iOS won't zoom if font-size >= 16px */
+  }
+
+  @media (min-width: 640px) {
+    input, select, textarea { font-size: 13px !important; }
+  }
+}
+
+@layer components {
+  /* ── Score inputs ── */
+  .si {
+    @apply w-14 sm:w-16 px-1 py-1.5 border border-border rounded text-xs text-center
+           focus:outline-none focus:border-blue focus:bg-blue-light transition-colors;
+    min-height: 36px;
+  }
+  .si.over { @apply border-red-400 bg-red-light; }
+
+  /* ── Page header pattern ── */
+  .page-header {
+    @apply mb-4 sm:mb-6;
+  }
+  .page-header h1 {
+    @apply text-lg sm:text-xl font-bold text-gray-900;
+  }
+  .page-header p {
+    @apply text-xs sm:text-sm text-gray-400 mt-0.5;
+  }
+
+  /* ── Card responsive padding ── */
+  .card-responsive {
+    @apply bg-white border border-border rounded-xl2 p-4 sm:p-5 mb-4 shadow-sm;
+  }
+
+  /* ── Responsive grid helpers ── */
+  .grid-metrics {
+    @apply grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3 mb-4 sm:mb-5;
+  }
+
+  /* ── Mobile-friendly table wrapper ── */
+  .table-scroll {
+    @apply overflow-x-auto -mx-4 sm:mx-0;
+  }
+  .table-scroll table {
+    @apply min-w-full;
+  }
+}
+
+/* ── Scrollbar styling ── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #d0d7e8; border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: #185FA5; }
+
+/* ── Print ── */
+@media print {
+  .no-print { display: none !important; }
+  body { background: #fff; font-size: 11px; }
+  .report-sheet {
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    max-width: 100% !important;
+  }
+  @page { margin: 1.2cm; }
+}
+
