@@ -5,10 +5,10 @@ import morgan from 'morgan'
 import mongoose from 'mongoose'
 
 // ── Internal module routers (no HTTP, no proxy) ──────────────
-import authRoutes     from '../services/auth/src/routes/auth.js'
-import schoolRoutes   from '../services/school/src/routes/school.js'
-import studentRoutes  from '../services/students/src/routes/students.js'
-import reportRoutes   from '../services/reports/src/routes/reports.js'
+import authRoutes     from '../../services/auth/src/routes/auth.js'
+import schoolRoutes   from '../../services/school/src/routes/school.js'
+import studentRoutes  from '../../services/students/src/routes/students.js'
+import reportRoutes   from '../../services/reports/src/routes/reports.js'
 
 // ── Superadmin seed (was in auth service index.js) ───────────
 import User from '../services/auth/src/models/User.js'
