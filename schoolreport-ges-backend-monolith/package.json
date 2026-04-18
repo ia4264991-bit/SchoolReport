@@ -1,0 +1,13 @@
+{
+  "name": "schoolreport-ges-backend",
+  "private": true,
+  "version": "2.0.0",
+  "workspaces": [
+    "gateway",
+    "services/*"
+  ],
+  "scripts": {
+    "dev":   "npm run dev --workspace=gateway",
+    "start": "npm run start --workspace=gateway"
+  }
+}
