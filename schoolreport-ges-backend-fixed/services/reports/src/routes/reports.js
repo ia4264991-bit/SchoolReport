@@ -2,29 +2,21 @@ import { Router } from 'express'
 import Score from '../models/Score.js'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 
-const router = Router()
+// Two routers — each mounted at a different prefix in the main server
+// scoresRouter → /api/scores
+// reportsRouter → /api/reports
+// All paths are RELATIVE — no /scores/* or /reports/* prefix inside these files.
 
 const sid = (req) => req.user.schoolId
 
-/* ══════════════════════════════════
-   SCORES
-══════════════════════════════════ */
+// ══════════════════════════════════════════════════════
+//  SCORES ROUTER  (mounted at /api/scores)
+// ══════════════════════════════════════════════════════
+export const scoresRouter = Router()
 
-/* GET /scores/:classId/:term */
-router.get('/scores/:classId/:term', requireAuth, async (req, res) => {
-  try {
-    const { classId, term } = req.params
-    // Teachers scoped to their own class
-    if (req.user.role === 'teacher' && req.user.classId !== classId) {
-      return res.status(403).json({ message: 'Access denied to this class.' })
-    }
-    const scores = await Score.find({ schoolId: sid(req), classId, term })
-    res.json(scores)
-  } catch (err) { res.status(500).json({ message: err.message }) }
-})
-
-/* GET /scores/student/:studentId/:term */
-router.get('/scores/student/:studentId/:term', requireAuth, async (req, res) => {
+/* GET /api/scores/student/:studentId/:term
+   Must be defined BEFORE /:classId/:term to avoid param shadowing */
+scoresRouter.get('/student/:studentId/:term', requireAuth, async (req, res) => {
   try {
     const scores = await Score.find({
       schoolId:  sid(req),
@@ -35,8 +27,20 @@ router.get('/scores/student/:studentId/:term', requireAuth, async (req, res) => 
   } catch (err) { res.status(500).json({ message: err.message }) }
 })
 
-/* POST /scores/:classId/:term/bulk — upsert all scores for a class */
-router.post('/scores/:classId/:term/bulk', requireAuth, async (req, res) => {
+/* GET /api/scores/:classId/:term */
+scoresRouter.get('/:classId/:term', requireAuth, async (req, res) => {
+  try {
+    const { classId, term } = req.params
+    if (req.user.role === 'teacher' && req.user.classId !== classId) {
+      return res.status(403).json({ message: 'Access denied to this class.' })
+    }
+    const scores = await Score.find({ schoolId: sid(req), classId, term })
+    res.json(scores)
+  } catch (err) { res.status(500).json({ message: err.message }) }
+})
+
+/* POST /api/scores/:classId/:term/bulk */
+scoresRouter.post('/:classId/:term/bulk', requireAuth, async (req, res) => {
   try {
     const { classId, term } = req.params
     const { scores } = req.body
@@ -49,14 +53,7 @@ router.post('/scores/:classId/:term/bulk', requireAuth, async (req, res) => {
         ops.push({
           updateOne: {
             filter: { studentId, subjectId, term, schoolId },
-            update: {
-              $set: {
-                classId,
-                schoolId,
-                classScore: parseFloat(vals.classScore) || 0,
-                examScore:  parseFloat(vals.examScore)  || 0,
-              }
-            },
+            update: { $set: { classId, schoolId, classScore: parseFloat(vals.classScore) || 0, examScore: parseFloat(vals.examScore) || 0 } },
             upsert: true,
           }
         })
@@ -67,8 +64,8 @@ router.post('/scores/:classId/:term/bulk', requireAuth, async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }) }
 })
 
-/* PUT /scores/:id */
-router.put('/scores/:id', requireAuth, async (req, res) => {
+/* PUT /api/scores/:id */
+scoresRouter.put('/:id', requireAuth, async (req, res) => {
   try {
     const score = await Score.findOneAndUpdate(
       { _id: req.params.id, schoolId: sid(req) },
@@ -80,8 +77,8 @@ router.put('/scores/:id', requireAuth, async (req, res) => {
   } catch (err) { res.status(400).json({ message: err.message }) }
 })
 
-/* DELETE /scores/:classId/:term */
-router.delete('/scores/:classId/:term', requireAuth, requireRole('admin'), async (req, res) => {
+/* DELETE /api/scores/:classId/:term */
+scoresRouter.delete('/:classId/:term', requireAuth, requireRole('admin'), async (req, res) => {
   try {
     const result = await Score.deleteMany({
       schoolId: sid(req),
@@ -92,12 +89,14 @@ router.delete('/scores/:classId/:term', requireAuth, requireRole('admin'), async
   } catch (err) { res.status(500).json({ message: err.message }) }
 })
 
-/* ══════════════════════════════════
-   REPORTS
-══════════════════════════════════ */
 
-/* GET /reports/student/:studentId/:term */
-router.get('/reports/student/:studentId/:term', requireAuth, async (req, res) => {
+// ══════════════════════════════════════════════════════
+//  REPORTS ROUTER  (mounted at /api/reports)
+// ══════════════════════════════════════════════════════
+export const reportsRouter = Router()
+
+/* GET /api/reports/student/:studentId/:term */
+reportsRouter.get('/student/:studentId/:term', requireAuth, async (req, res) => {
   try {
     const scores = await Score.find({
       schoolId:  sid(req),
@@ -108,8 +107,8 @@ router.get('/reports/student/:studentId/:term', requireAuth, async (req, res) =>
   } catch (err) { res.status(500).json({ message: err.message }) }
 })
 
-/* GET /reports/class/:classId/:term */
-router.get('/reports/class/:classId/:term', requireAuth, async (req, res) => {
+/* GET /api/reports/class/:classId/:term */
+reportsRouter.get('/class/:classId/:term', requireAuth, async (req, res) => {
   try {
     const scores = await Score.find({
       schoolId: sid(req),
@@ -125,10 +124,9 @@ router.get('/reports/class/:classId/:term', requireAuth, async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }) }
 })
 
-/* GET /reports/school/:schoolId/analytics — headmaster / admin */
-router.get('/reports/school/:schoolId/analytics', requireAuth, requireRole('admin', 'head', 'superadmin'), async (req, res) => {
+/* GET /api/reports/school/:schoolId/analytics */
+reportsRouter.get('/school/:schoolId/analytics', requireAuth, requireRole('admin', 'head', 'superadmin'), async (req, res) => {
   try {
-    // Admins can only query their own school
     if (req.user.role !== 'superadmin' && req.params.schoolId !== sid(req)) {
       return res.status(403).json({ message: 'Access denied.' })
     }
@@ -147,4 +145,5 @@ router.get('/reports/school/:schoolId/analytics', requireAuth, requireRole('admi
   } catch (err) { res.status(500).json({ message: err.message }) }
 })
 
-export default router
+// Default export kept for backward compatibility (unused internally)
+export default scoresRouter
