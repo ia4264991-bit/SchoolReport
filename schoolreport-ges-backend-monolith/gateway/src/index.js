@@ -20,6 +20,9 @@ const PORT = process.env.PORT || process.env.GATEWAY_PORT || 3000
 app.use(cors())
 app.use(express.json())
 app.use(morgan('dev'))
+app.get('/', (req, res) => {
+  res.json({ status: 'SchoolReport API running 🚀' })
+})
 
 // ── Health ───────────────────────────────────────────────────
 app.get('/api/health', (_, res) => {
