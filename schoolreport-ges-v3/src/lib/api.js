@@ -1,7 +1,6 @@
 import axios from 'axios'
-
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: 'https://schoolreport-ok5g.onrender.com/api' ,
   timeout: 10000,
 })
 
