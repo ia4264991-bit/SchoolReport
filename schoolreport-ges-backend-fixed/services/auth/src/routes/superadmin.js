@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import User from '../models/User.js'
-import { School } from '../../school/src/models/index.js'
+import { School } from '../../../school/src/models/index.js'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { sendWelcomeEmail } from '../utils/mailer.js'
 import { generateTempPassword } from '../utils/password.js'
