@@ -13,19 +13,19 @@ import morgan from 'morgan'
 import mongoose from 'mongoose'
 
 // ── Auth module routers ─────────────────────────────────────────
-import authRoutes       from '../services/auth/src/routes/auth.js'
-import superadminRoutes from '../services/auth/src/routes/superadmin.js'
-import userRoutes       from '../services/auth/src/routes/users.js'
+import authRoutes       from '../../services/auth/src/routes/auth.js'
+import superadminRoutes from '../../services/auth/src/routes/superadmin.js'
+import userRoutes       from '../../services/auth/src/routes/users.js'
 
 // ── School, Students ────────────────────────────────────────────
-import schoolRoutes  from '../services/school/src/routes/school.js'
-import studentRoutes from '../services/students/src/routes/students.js'
+import schoolRoutes  from '../../services/school/src/routes/school.js'
+import studentRoutes from '../../services/students/src/routes/students.js'
 
 // ── Reports ─────────────────────────────────────────────────────
-import { scoresRouter, reportsRouter } from '../services/reports/src/routes/reports.js'
+import { scoresRouter, reportsRouter } from '../../services/reports/src/routes/reports.js'
 
 // ── Superadmin seed model ────────────────────────────────────────
-import User from '../services/auth/src/models/User.js'
+import User from '../../services/auth/src/models/User.js'
 
 const app  = express()
 const PORT = process.env.PORT || 3000
