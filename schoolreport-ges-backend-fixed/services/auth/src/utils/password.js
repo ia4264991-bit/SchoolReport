@@ -1,8 +1,8 @@
 import crypto from 'crypto'
 
 /**
- * Generates a secure, readable temporary password
- * Always includes uppercase, lowercase, digit, and special char
+ * Generates a secure readable temporary password
+ * Always contains uppercase, lowercase, digit, and special char
  */
 export function generateTempPassword(length = 10) {
   const upper   = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
@@ -18,13 +18,12 @@ export function generateTempPassword(length = 10) {
   pw += special[crypto.randomInt(special.length)]
   for (let i = 4; i < length; i++) pw += all[crypto.randomInt(all.length)]
 
-  // Shuffle
   return pw.split('').sort(() => crypto.randomInt(3) - 1).join('')
 }
 
 /**
- * Generates a cryptographically secure reset token (hex string)
+ * Generates a 6-digit numeric OTP for password reset
  */
-export function generateResetToken() {
-  return crypto.randomBytes(32).toString('hex')
+export function generateOTP() {
+  return String(crypto.randomInt(100000, 999999))
 }
