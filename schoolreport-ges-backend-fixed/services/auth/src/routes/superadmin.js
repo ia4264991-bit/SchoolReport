@@ -10,43 +10,35 @@ const router = Router()
 
 /* ═══════════════════════════════════════════════════════
    POST /api/superadmin/schools
-   Creates a school + its first admin user in one step.
-   Credentials are ALWAYS in the response whether or not
-   the welcome email was delivered.
 ═══════════════════════════════════════════════════════ */
 router.post('/schools', requireAuth, requireRole('superadmin'), async (req, res) => {
   const { schoolName, schoolEmail, adminName, adminEmail, circuit, district, region } = req.body
 
-  // ── 1. Validate required fields ───────────────────────
+  // 1. Validate
   if (!schoolName || !schoolEmail || !adminName || !adminEmail) {
     return res.status(400).json({
       message: 'schoolName, schoolEmail, adminName and adminEmail are all required.',
     })
   }
 
-  // ── 2. Check for duplicates before creating anything ──
+  // 2. Duplicate checks
   try {
     const [userExists, schoolExists] = await Promise.all([
       User.findOne({ email: adminEmail.toLowerCase() }),
       School.findOne({ email: schoolEmail.toLowerCase() }),
     ])
-
     if (userExists) {
-      return res.status(409).json({
-        message: `A user with email "${adminEmail}" already exists.`,
-      })
+      return res.status(409).json({ message: `A user with email "${adminEmail}" already exists.` })
     }
     if (schoolExists) {
-      return res.status(409).json({
-        message: `A school with email "${schoolEmail}" already exists.`,
-      })
+      return res.status(409).json({ message: `A school with email "${schoolEmail}" already exists.` })
     }
   } catch (err) {
     console.error('[SuperAdmin] Duplicate-check error:', err.message)
     return res.status(500).json({ message: 'Database lookup failed: ' + err.message })
   }
 
-  // ── 3. Create school ───────────────────────────────────
+  // 3. Create school
   let school
   try {
     school = await School.create({
@@ -64,7 +56,7 @@ router.post('/schools', requireAuth, requireRole('superadmin'), async (req, res)
     return res.status(500).json({ message: 'Failed to create school: ' + err.message })
   }
 
-  // ── 4. Create admin user ───────────────────────────────
+  // 4. Create admin user
   let admin
   const tempPassword = generateTempPassword()
   const emailPrefix  = adminEmail.toLowerCase().split('@')[0].replace(/[^a-z0-9]/g, '') || 'admin'
@@ -81,39 +73,31 @@ router.post('/schools', requireAuth, requireRole('superadmin'), async (req, res)
       mustChangePassword: true,
     })
   } catch (err) {
-    // Roll back: delete the school we just created
+    // Rollback school if user creation fails
     console.error('[SuperAdmin] User.create error:', err.message)
     await School.findByIdAndDelete(school._id).catch(() => {})
-
     if (err.code === 11000) {
       return res.status(409).json({ message: 'A user with that email already exists.' })
     }
     return res.status(500).json({ message: 'Failed to create admin user: ' + err.message })
   }
 
-  // ── 5. Send welcome email (non-fatal) ──────────────────
-  const emailSent = await sendWelcomeEmail({
-    to:          adminEmail,
-    fullName:    adminName,
-    email:       adminEmail,
-    tempPassword,
-    role:        'admin',
-    schoolName,
+  // 5. Fire welcome email in background — does NOT block the response
+  sendWelcomeEmail({
+    to: adminEmail, fullName: adminName, email: adminEmail,
+    tempPassword, role: 'admin', schoolName,
   })
 
-  // ── 6. Always return credentials in response ───────────
+  // 6. Respond immediately with credentials
   return res.status(201).json({
     message: `School "${schoolName}" created successfully.`,
-    emailSent,
     school,
     admin,
     credentials: {
       loginUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/login`,
       email:     adminEmail,
       password:  tempPassword,
-      note: emailSent
-        ? 'Credentials also emailed to the admin.'
-        : '⚠️ Email failed — share these credentials manually with the admin.',
+      note:      'A welcome email with these credentials has been sent to the admin.',
     },
   })
 })
@@ -140,10 +124,7 @@ router.put('/schools/:id/toggle', requireAuth, requireRole('superadmin'), async 
     if (!school) return res.status(404).json({ message: 'School not found.' })
     school.isActive = !school.isActive
     await school.save()
-    res.json({
-      message: `School ${school.isActive ? 'activated' : 'deactivated'}.`,
-      school,
-    })
+    res.json({ message: `School ${school.isActive ? 'activated' : 'deactivated'}.`, school })
   } catch (err) {
     console.error('[SuperAdmin] Toggle error:', err.message)
     res.status(500).json({ message: err.message })

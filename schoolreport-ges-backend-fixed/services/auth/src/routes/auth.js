@@ -2,7 +2,7 @@ import { Router } from 'express'
 import jwt from 'jsonwebtoken'
 import User from '../models/User.js'
 import { requireAuth } from '../middleware/auth.js'
-import { sendOTPEmail, sendTestEmail } from '../utils/mailer.js'
+import { sendOTPEmail } from '../utils/mailer.js'
 import { generateOTP } from '../utils/password.js'
 
 const router = Router()
@@ -89,7 +89,8 @@ router.post('/forgot-password', async (req, res) => {
     user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000)  // 10 min
     await user.save()
 
-    await sendOTPEmail({ to: user.email, fullName: user.fullName, otp })
+    // Fire in background — does NOT block the response
+    sendOTPEmail({ to: user.email, fullName: user.fullName, otp })
 
     res.json({ message: 'If that email is registered, an OTP has been sent.' })
   } catch (err) {
@@ -149,37 +150,6 @@ router.post('/reset-password', async (req, res) => {
     res.json({ message: 'Password reset successfully. You can now log in.' })
   } catch (err) {
     res.status(500).json({ message: err.message })
-  }
-})
-
-/* POST /api/auth/test-email  — DEV diagnostic, remove before going live */
-router.post('/test-email', async (req, res) => {
-  const { to } = req.body
-  if (!to) return res.status(400).json({ message: '"to" email address is required.' })
-  try {
-    await sendTestEmail(to)
-    res.json({
-      success: true,
-      message: `Test email sent to ${to}. Check inbox and spam.`,
-      config: {
-        host: process.env.SMTP_HOST,
-        port: process.env.SMTP_PORT,
-        user: process.env.SMTP_USER,
-        from: process.env.EMAIL_FROM,
-      },
-    })
-  } catch (err) {
-    res.status(500).json({
-      success: false,
-      message: 'SMTP failed — see error below.',
-      error:   err.message,
-      config: {
-        host: process.env.SMTP_HOST,
-        port: process.env.SMTP_PORT,
-        user: process.env.SMTP_USER,
-        from: process.env.EMAIL_FROM,
-      },
-    })
   }
 })
 

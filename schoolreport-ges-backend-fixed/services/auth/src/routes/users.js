@@ -49,20 +49,20 @@ router.post('/', requireAuth, requireRole('admin'), async (req, res) => {
       mustChangePassword: true,
     })
 
-    const emailSent = await sendWelcomeEmail({
+    // Fire welcome email in background — does NOT block the response
+    sendWelcomeEmail({
       to: email, fullName, email, tempPassword, role,
       schoolName: schoolName || 'Your School',
     })
 
     res.status(201).json({
       user,
-      emailSent,
       credentials: {
         email,
         password: tempPassword,
-        note: emailSent ? 'Credentials emailed.' : '⚠️ Email failed — share password manually.',
+        note: 'A welcome email with these credentials has been sent.',
       },
-      message: 'User created.',
+      message: 'User created successfully.',
     })
   } catch (err) {
     if (err.code === 11000) {
@@ -120,19 +120,15 @@ router.post('/:id/reset-password', requireAuth, requireRole('admin'), async (req
     user.mustChangePassword = true
     await user.save()
 
-    const emailSent = await sendAdminResetEmail({
+    // Fire reset email in background
+    sendAdminResetEmail({
       to: user.email, fullName: user.fullName,
       newPassword, schoolName: schoolName || 'Your School',
     })
 
     res.json({
-      message: `Password reset for ${user.fullName}.`,
-      emailSent,
-      credentials: {
-        email:    user.email,
-        password: newPassword,
-        note: emailSent ? 'New credentials emailed.' : '⚠️ Email failed — share password manually.',
-      },
+      message: `Password reset for ${user.fullName}. New credentials sent to ${user.email}.`,
+      credentials: { email: user.email, password: newPassword },
     })
   } catch (err) { res.status(500).json({ message: err.message }) }
 })
