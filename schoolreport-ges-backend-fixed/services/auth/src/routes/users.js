@@ -31,10 +31,16 @@ router.post('/', requireAuth, requireRole('admin'), async (req, res) => {
     if (exists) return res.status(409).json({ message: 'A user with this email already exists.' })
 
     const tempPassword = generateTempPassword()
+
+    // Build unique username: email prefix + last 6 chars of schoolId
+    const emailPrefix  = email.toLowerCase().split('@')[0].replace(/[^a-z0-9]/g, '')
+    const uniqueSuffix = req.user.schoolId?.toString().slice(-6) || Date.now().toString().slice(-6)
+    const username     = `${emailPrefix}_${uniqueSuffix}`
+
     const user = await User.create({
       fullName,
       email:              email.toLowerCase(),
-      username:           email.toLowerCase().split('@')[0] + '_' + Date.now().toString().slice(-4),
+      username,
       password:           tempPassword,
       role,
       schoolId:           req.user.schoolId,
@@ -59,6 +65,12 @@ router.post('/', requireAuth, requireRole('admin'), async (req, res) => {
       message: 'User created.',
     })
   } catch (err) {
+    if (err.code === 11000) {
+      const field = Object.keys(err.keyPattern || {})[0] || 'field'
+      return res.status(409).json({
+        message: `A user with that ${field} already exists.`,
+      })
+    }
     res.status(400).json({ message: err.message })
   }
 })
