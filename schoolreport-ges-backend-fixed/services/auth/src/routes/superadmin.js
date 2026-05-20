@@ -8,53 +8,70 @@ import { generateTempPassword } from '../utils/password.js'
 const router = Router()
 // Mounted at: /api/superadmin
 
-/* ═══════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════
    POST /api/superadmin/schools
-   Creates a school + first admin user in one atomic flow.
-   Credentials are ALWAYS returned in the response regardless
-   of whether the email was delivered.
-═══════════════════════════════════════════════════════════════ */
+   Creates a school + its first admin user in one step.
+   Credentials are ALWAYS in the response whether or not
+   the welcome email was delivered.
+═══════════════════════════════════════════════════════ */
 router.post('/schools', requireAuth, requireRole('superadmin'), async (req, res) => {
-  try {
-    const { schoolName, schoolEmail, adminName, adminEmail, circuit, district, region } = req.body
+  const { schoolName, schoolEmail, adminName, adminEmail, circuit, district, region } = req.body
 
-    if (!schoolName || !schoolEmail || !adminName || !adminEmail) {
-      return res.status(400).json({
-        message: 'schoolName, schoolEmail, adminName and adminEmail are all required.',
+  // ── 1. Validate required fields ───────────────────────
+  if (!schoolName || !schoolEmail || !adminName || !adminEmail) {
+    return res.status(400).json({
+      message: 'schoolName, schoolEmail, adminName and adminEmail are all required.',
+    })
+  }
+
+  // ── 2. Check for duplicates before creating anything ──
+  try {
+    const [userExists, schoolExists] = await Promise.all([
+      User.findOne({ email: adminEmail.toLowerCase() }),
+      School.findOne({ email: schoolEmail.toLowerCase() }),
+    ])
+
+    if (userExists) {
+      return res.status(409).json({
+        message: `A user with email "${adminEmail}" already exists.`,
       })
     }
-
-    // Check admin email not already taken
-    const userExists = await User.findOne({ email: adminEmail.toLowerCase() })
-    if (userExists) {
-      return res.status(409).json({ message: 'A user with that admin email already exists.' })
-    }
-
-    // Check school email not already taken
-    const schoolExists = await School.findOne({ email: schoolEmail.toLowerCase() })
     if (schoolExists) {
-      return res.status(409).json({ message: 'A school with that email already exists.' })
+      return res.status(409).json({
+        message: `A school with email "${schoolEmail}" already exists.`,
+      })
     }
+  } catch (err) {
+    console.error('[SuperAdmin] Duplicate-check error:', err.message)
+    return res.status(500).json({ message: 'Database lookup failed: ' + err.message })
+  }
 
-    // Create school
-    const school = await School.create({
+  // ── 3. Create school ───────────────────────────────────
+  let school
+  try {
+    school = await School.create({
       name:     schoolName,
       email:    schoolEmail.toLowerCase(),
       circuit:  circuit  || '',
       district: district || '',
       region:   region   || '',
     })
+  } catch (err) {
+    console.error('[SuperAdmin] School.create error:', err.message)
+    if (err.code === 11000) {
+      return res.status(409).json({ message: 'A school with that email already exists.' })
+    }
+    return res.status(500).json({ message: 'Failed to create school: ' + err.message })
+  }
 
-    // Generate credentials
-    const tempPassword = generateTempPassword()
+  // ── 4. Create admin user ───────────────────────────────
+  let admin
+  const tempPassword = generateTempPassword()
+  const emailPrefix  = adminEmail.toLowerCase().split('@')[0].replace(/[^a-z0-9]/g, '') || 'admin'
+  const username     = `${emailPrefix}_${school._id.toString().slice(-6)}`
 
-    // Build a unique username: email prefix + last 6 chars of school _id
-    const emailPrefix = adminEmail.toLowerCase().split('@')[0].replace(/[^a-z0-9]/g, '')
-    const uniqueSuffix = school._id.toString().slice(-6)
-    const username = `${emailPrefix}_${uniqueSuffix}`
-
-    // Create admin user
-    const admin = await User.create({
+  try {
+    admin = await User.create({
       fullName:           adminName,
       email:              adminEmail.toLowerCase(),
       username,
@@ -63,61 +80,60 @@ router.post('/schools', requireAuth, requireRole('superadmin'), async (req, res)
       schoolId:           school._id,
       mustChangePassword: true,
     })
-
-    // Try email — non-fatal, credentials always returned in response
-    const emailSent = await sendWelcomeEmail({
-      to:          adminEmail,
-      fullName:    adminName,
-      email:       adminEmail,
-      tempPassword,
-      role:        'admin',
-      schoolName,
-    })
-
-    return res.status(201).json({
-      message: `School "${schoolName}" created successfully.`,
-      emailSent,
-      school,
-      admin,
-      credentials: {
-        loginUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/login`,
-        email:     adminEmail,
-        password:  tempPassword,
-        note: emailSent
-          ? 'Credentials also emailed to the admin.'
-          : '⚠️ Email delivery failed — share these credentials manually with the admin.',
-      },
-    })
   } catch (err) {
-    console.error('[SuperAdmin] Create school error:', err.message)
+    // Roll back: delete the school we just created
+    console.error('[SuperAdmin] User.create error:', err.message)
+    await School.findByIdAndDelete(school._id).catch(() => {})
 
-    // Friendly messages for common MongoDB errors
     if (err.code === 11000) {
-      const field = Object.keys(err.keyPattern || {})[0] || 'field'
-      return res.status(409).json({
-        message: `A record with that ${field} already exists. Please use different values.`,
-      })
+      return res.status(409).json({ message: 'A user with that email already exists.' })
     }
-
-    return res.status(400).json({ message: err.message })
+    return res.status(500).json({ message: 'Failed to create admin user: ' + err.message })
   }
+
+  // ── 5. Send welcome email (non-fatal) ──────────────────
+  const emailSent = await sendWelcomeEmail({
+    to:          adminEmail,
+    fullName:    adminName,
+    email:       adminEmail,
+    tempPassword,
+    role:        'admin',
+    schoolName,
+  })
+
+  // ── 6. Always return credentials in response ───────────
+  return res.status(201).json({
+    message: `School "${schoolName}" created successfully.`,
+    emailSent,
+    school,
+    admin,
+    credentials: {
+      loginUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/login`,
+      email:     adminEmail,
+      password:  tempPassword,
+      note: emailSent
+        ? 'Credentials also emailed to the admin.'
+        : '⚠️ Email failed — share these credentials manually with the admin.',
+    },
+  })
 })
 
-/* ═══════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════
    GET /api/superadmin/schools
-═══════════════════════════════════════════════════════════════ */
+═══════════════════════════════════════════════════════ */
 router.get('/schools', requireAuth, requireRole('superadmin'), async (req, res) => {
   try {
     const schools = await School.find().sort({ createdAt: -1 })
     res.json(schools)
   } catch (err) {
+    console.error('[SuperAdmin] GET schools error:', err.message)
     res.status(500).json({ message: err.message })
   }
 })
 
-/* ═══════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════
    PUT /api/superadmin/schools/:id/toggle
-═══════════════════════════════════════════════════════════════ */
+═══════════════════════════════════════════════════════ */
 router.put('/schools/:id/toggle', requireAuth, requireRole('superadmin'), async (req, res) => {
   try {
     const school = await School.findById(req.params.id)
@@ -129,9 +145,9 @@ router.put('/schools/:id/toggle', requireAuth, requireRole('superadmin'), async 
       school,
     })
   } catch (err) {
+    console.error('[SuperAdmin] Toggle error:', err.message)
     res.status(500).json({ message: err.message })
   }
 })
 
 export default router
-
