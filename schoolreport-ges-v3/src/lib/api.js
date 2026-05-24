@@ -1,7 +1,8 @@
 import axios from 'axios'
+
 const api = axios.create({
-  baseURL: 'https://schoolreport-ok5g.onrender.com/api' ,
-  timeout: 10000,
+  baseURL: '/api',
+  timeout: 30000,  // 30 seconds — school creation can take a moment
 })
 
 // Attach JWT token to every request

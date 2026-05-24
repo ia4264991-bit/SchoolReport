@@ -32,14 +32,27 @@ export default function SuperAdminPage() {
     if (!schoolName || !schoolEmail || !adminName || !adminEmail)
       return setErr('School name, school email, admin name and admin email are all required.')
     setSaving(true)
+    setErr('')
     try {
       const { data } = await api.post('/superadmin/schools', form)
       setModal(false)
       setCreated(data)
       setShowPw(false)
       load()
-    } catch (e) { setErr(e.response?.data?.message || 'Failed to create school.') }
-    finally { setSaving(false) }
+    } catch (e) {
+      const msg = e.response?.data?.message || ''
+      // If school was already created (duplicate on retry), close modal and reload
+      if (e.response?.status === 409) {
+        setErr(msg)
+      } else if (e.code === 'ECONNABORTED' || e.message?.includes('timeout')) {
+        // Axios timed out — but server may have succeeded, reload to check
+        setModal(false)
+        toast.error('Request timed out — checking if school was created...')
+        load()
+      } else {
+        setErr(msg || 'Failed to create school. Check server logs.')
+      }
+    } finally { setSaving(false) }
   }
 
   const copy = (text) => { navigator.clipboard.writeText(text); toast.success('Copied to clipboard!') }
@@ -111,7 +124,14 @@ export default function SuperAdminPage() {
       {/* CREATE SCHOOL MODAL */}
       <Modal open={modal} onClose={() => setModal(false)} title="Create New School"
         footer={<><Button onClick={() => setModal(false)}>Cancel</Button>
-          <Button variant="primary" onClick={save} disabled={saving}>{saving ? 'Creating…' : 'Create School'}</Button></>}>
+          <Button variant="primary" onClick={save} disabled={saving}>
+            {saving ? (
+              <span className="flex items-center gap-2">
+                <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                Creating… please wait
+              </span>
+            ) : 'Create School'}
+          </Button></>}>
         <Alert variant="info">Credentials are shown after creation AND emailed to the admin.</Alert>
         <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">School Details</p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3">
