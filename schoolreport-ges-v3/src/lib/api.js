@@ -1,26 +1,32 @@
 import axios from 'axios'
 
 const api = axios.create({
-  baseURL: '/api',
-  timeout: 30000,  // 30 seconds — school creation can take a moment
+  baseURL: import.meta.env.VITE_API_URL,
+  timeout: 30000,
 })
 
 // Attach JWT token to every request
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('ges_token')
-  if (token) config.headers.Authorization = `Bearer ${token}`
+
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+
   return config
 })
 
-// Handle 401 globally — redirect to login
+// Handle 401 globally
 api.interceptors.response.use(
   (res) => res,
   (err) => {
     if (err.response?.status === 401) {
       localStorage.removeItem('ges_token')
       localStorage.removeItem('ges_user')
+
       window.location.href = '/login'
     }
+
     return Promise.reject(err)
   }
 )
