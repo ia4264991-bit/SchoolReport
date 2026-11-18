@@ -1,0 +1,355 @@
+openapi: 3.0.3
+info:
+  title: SchoolReport GES API
+  version: 3.0.0
+  description: >-
+    REST API of SchoolReport GES. All routes are under /api. Authenticate with
+    "Authorization: Bearer <token>" from POST /api/auth/login.
+    Hand-written from the route files in services/*/src/routes — update it with them.
+    Two routes are deliberately not listed because they end the caller's own session and
+    would break an automated security scan: POST /api/auth/change-password and
+    POST /api/users/{id}/reset-password (both are covered by test/api.test.js).
+servers:
+  - url: /
+security:
+  - bearer: []
+
+tags:
+  - { name: auth }
+  - { name: superadmin }
+  - { name: users }
+  - { name: school }
+  - { name: students }
+  - { name: scores }
+  - { name: reports }
+  - { name: health }
+
+paths:
+  /api/health:
+    get: { tags: [health], security: [], summary: Health incl. database, responses: { '200': { $ref: '#/components/responses/Ok' } } }
+  /api/health/live:
+    get: { tags: [health], security: [], summary: Process is up, responses: { '200': { $ref: '#/components/responses/Ok' } } }
+  /api/health/ready:
+    get: { tags: [health], security: [], summary: Database answers, responses: { '200': { $ref: '#/components/responses/Ok' } } }
+
+  # ── auth ──────────────────────────────────────────────────────────────
+  /api/auth/login:
+    post:
+      tags: [auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email, example: nobody@example.com }
+                password: { type: string, example: not-a-real-password }
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '401': { $ref: '#/components/responses/Error' } }
+  /api/auth/me:
+    get: { tags: [auth], responses: { '200': { $ref: '#/components/responses/Ok' }, '401': { $ref: '#/components/responses/Error' } } }
+  /api/auth/forgot-password:
+    post:
+      tags: [auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, properties: { email: { type: string, format: email, example: nobody@example.com } } }
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /api/auth/verify-otp:
+    post:
+      tags: [auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, properties: { email: { type: string, example: nobody@example.com }, otp: { type: string, example: '000000' } } }
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '400': { $ref: '#/components/responses/Error' } }
+  /api/auth/reset-password:
+    post:
+      tags: [auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email: { type: string, example: nobody@example.com }
+                otp: { type: string, example: '000000' }
+                newPassword: { type: string, example: Example-Passw0rd }
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '400': { $ref: '#/components/responses/Error' } }
+
+  # ── superadmin ────────────────────────────────────────────────────────
+  /api/superadmin/schools:
+    get: { tags: [superadmin], responses: { '200': { $ref: '#/components/responses/Ok' }, '403': { $ref: '#/components/responses/Error' } } }
+    post:
+      tags: [superadmin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                schoolName: { type: string, example: Example School }
+                schoolEmail: { type: string, example: office@example.com }
+                adminName: { type: string, example: Example Admin }
+                adminEmail: { type: string, example: admin@example.com }
+                circuit: { type: string }
+                district: { type: string }
+                region: { type: string }
+      responses: { '201': { $ref: '#/components/responses/Ok' }, '403': { $ref: '#/components/responses/Error' } }
+  /api/superadmin/schools/{id}/toggle:
+    put:
+      tags: [superadmin]
+      parameters: [{ $ref: '#/components/parameters/schoolIdPath' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '403': { $ref: '#/components/responses/Error' } }
+
+  # ── users ─────────────────────────────────────────────────────────────
+  /api/users:
+    get: { tags: [users], responses: { '200': { $ref: '#/components/responses/Ok' } } }
+    post:
+      tags: [users]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/UserInput' } } } }
+      responses: { '201': { $ref: '#/components/responses/Ok' }, '400': { $ref: '#/components/responses/Error' } }
+  /api/users/{id}:
+    put:
+      tags: [users]
+      parameters: [{ $ref: '#/components/parameters/userIdPath' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/UserInput' } } } }
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '400': { $ref: '#/components/responses/Error' } }
+    delete:
+      tags: [users]
+      parameters: [{ $ref: '#/components/parameters/userIdPath' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '404': { $ref: '#/components/responses/Error' } }
+  /api/audit:
+    get:
+      tags: [users]
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, example: 50 } }
+        - { name: before, in: query, schema: { type: integer, example: 1000 } }
+        - { name: action, in: query, schema: { type: string, example: scores. } }
+        - { name: targetType, in: query, schema: { type: string, example: student } }
+        - { name: targetId, in: query, schema: { type: string } }
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+
+  # ── school ────────────────────────────────────────────────────────────
+  /api/school/schools:
+    get: { tags: [school], responses: { '200': { $ref: '#/components/responses/Ok' }, '403': { $ref: '#/components/responses/Error' } } }
+  /api/school/schools/{id}:
+    get:
+      tags: [school]
+      parameters: [{ $ref: '#/components/parameters/schoolIdPath' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '404': { $ref: '#/components/responses/Error' } }
+  /api/school/settings:
+    get: { tags: [school], responses: { '200': { $ref: '#/components/responses/Ok' } } }
+    put:
+      tags: [school]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                schoolName: { type: string, example: Demo Basic School }
+                circuit: { type: string, example: Osu }
+                district: { type: string, example: Accra Metro }
+                region: { type: string, example: Greater Accra }
+                headTeacher: { type: string, example: Mr. Kofi Asante }
+                academicYear: { type: string, example: 2026/2027 }
+                term: { type: string, enum: ['1', '2', '3'], example: '1' }
+                nextTermDate: { type: string, format: date, example: '2027-01-12' }
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /api/school/logo:
+    get: { tags: [school], responses: { '200': { description: The image, content: { image/png: { schema: { type: string, format: binary } } } }, '404': { $ref: '#/components/responses/Error' } } }
+    put:
+      tags: [school]
+      requestBody: { required: true, content: { image/png: { schema: { type: string, format: binary } } } }
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '415': { $ref: '#/components/responses/Error' } }
+    delete: { tags: [school], responses: { '200': { $ref: '#/components/responses/Ok' } } }
+  /api/school/stats:
+    get: { tags: [school], responses: { '200': { $ref: '#/components/responses/Ok' } } }
+  /api/school/classes:
+    get: { tags: [school], responses: { '200': { $ref: '#/components/responses/Ok' } } }
+    post:
+      tags: [school]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ClassInput' } } } }
+      responses: { '201': { $ref: '#/components/responses/Ok' } }
+  /api/school/classes/{id}:
+    put:
+      tags: [school]
+      parameters: [{ $ref: '#/components/parameters/classIdPath' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ClassInput' } } } }
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+    delete:
+      tags: [school]
+      parameters: [{ $ref: '#/components/parameters/classIdPath' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '409': { $ref: '#/components/responses/Error' } }
+  /api/school/subjects:
+    get: { tags: [school], responses: { '200': { $ref: '#/components/responses/Ok' } } }
+    post:
+      tags: [school]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SubjectInput' } } } }
+      responses: { '201': { $ref: '#/components/responses/Ok' } }
+  /api/school/subjects/{id}:
+    put:
+      tags: [school]
+      parameters: [{ $ref: '#/components/parameters/subjectIdPath' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SubjectInput' } } } }
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+    delete:
+      tags: [school]
+      parameters: [{ $ref: '#/components/parameters/subjectIdPath' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /api/school/max-marks:
+    get: { tags: [school], responses: { '200': { $ref: '#/components/responses/Ok' } } }
+    put:
+      tags: [school]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: { type: number }, example: { 00000000-0000-0000-0000-000000000000: 30 } }
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+
+  # ── students ──────────────────────────────────────────────────────────
+  /api/students:
+    get:
+      tags: [students]
+      parameters: [{ name: classId, in: query, schema: { type: string, format: uuid } }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+    post:
+      tags: [students]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/StudentInput' } } } }
+      responses: { '201': { $ref: '#/components/responses/Ok' } }
+  /api/students/bulk:
+    post:
+      tags: [students]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, properties: { students: { type: array, items: { $ref: '#/components/schemas/StudentInput' } } } }
+      responses: { '201': { $ref: '#/components/responses/Ok' } }
+  /api/students/{id}:
+    get:
+      tags: [students]
+      parameters: [{ $ref: '#/components/parameters/studentIdPath' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '404': { $ref: '#/components/responses/Error' } }
+    put:
+      tags: [students]
+      parameters: [{ $ref: '#/components/parameters/studentIdPath' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/StudentInput' } } } }
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+    delete:
+      tags: [students]
+      parameters: [{ $ref: '#/components/parameters/studentIdPath' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+
+  # ── scores ────────────────────────────────────────────────────────────
+  /api/scores/student/{studentId}/{term}:
+    get:
+      tags: [scores]
+      parameters: [{ $ref: '#/components/parameters/studentIdParam' }, { $ref: '#/components/parameters/term' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /api/scores/{classId}/{term}:
+    get:
+      tags: [scores]
+      parameters: [{ $ref: '#/components/parameters/classIdParam' }, { $ref: '#/components/parameters/term' }, { $ref: '#/components/parameters/academicYear' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+    delete:
+      tags: [scores]
+      parameters: [{ $ref: '#/components/parameters/classIdParam' }, { $ref: '#/components/parameters/term' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /api/scores/{classId}/{term}/bulk:
+    post:
+      tags: [scores]
+      parameters: [{ $ref: '#/components/parameters/classIdParam' }, { $ref: '#/components/parameters/term' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                scores:
+                  type: object
+                  description: "{ studentId: { subjectId: { classScore, examScore } } }"
+                  additionalProperties: { type: object, additionalProperties: { $ref: '#/components/schemas/ScoreValues' } }
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '400': { $ref: '#/components/responses/Error' } }
+  /api/scores/{id}:
+    put:
+      tags: [scores]
+      parameters: [{ $ref: '#/components/parameters/scoreIdPath' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ScoreValues' } } } }
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+
+  # ── reports ───────────────────────────────────────────────────────────
+  /api/reports/student/{studentId}/{term}:
+    get:
+      tags: [reports]
+      parameters: [{ $ref: '#/components/parameters/studentIdParam' }, { $ref: '#/components/parameters/term' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /api/reports/class/{classId}/{term}:
+    get:
+      tags: [reports]
+      parameters: [{ $ref: '#/components/parameters/classIdParam' }, { $ref: '#/components/parameters/term' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /api/reports/school/{schoolId}/analytics:
+    get:
+      tags: [reports]
+      parameters: [{ $ref: '#/components/parameters/schoolIdParam' }, { $ref: '#/components/parameters/academicYear' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '403': { $ref: '#/components/responses/Error' } }
+
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    schoolIdPath:  { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    userIdPath:    { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    classIdPath:   { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    subjectIdPath: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    studentIdPath: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    scoreIdPath:   { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    classIdParam:   { name: classId, in: path, required: true, schema: { type: string, format: uuid } }
+    studentIdParam: { name: studentId, in: path, required: true, schema: { type: string, format: uuid } }
+    schoolIdParam:  { name: schoolId, in: path, required: true, schema: { type: string, format: uuid } }
+    term: { name: term, in: path, required: true, schema: { type: string, enum: ['1', '2', '3'], example: '1' } }
+    academicYear: { name: academicYear, in: query, schema: { type: string, example: 2026/2027 } }
+  schemas:
+    UserInput:
+      type: object
+      properties:
+        fullName: { type: string, example: Ama Owusu }
+        email: { type: string, format: email, example: new.teacher@example.com }
+        role: { type: string, enum: [admin, head, teacher, student], example: teacher }
+        classId: { type: string, format: uuid }
+        notes: { type: string }
+        isActive: { type: boolean }
+    ClassInput:
+      type: object
+      properties: { name: { type: string, example: Class 5A }, level: { type: string, example: Primary 5 } }
+    SubjectInput:
+      type: object
+      properties: { name: { type: string, example: History }, code: { type: string, example: HIS }, order: { type: integer, example: 4 } }
+    StudentInput:
+      type: object
+      properties:
+        fullName: { type: string, example: Kofi Mensah }
+        gender: { type: string, enum: [M, F], example: M }
+        dateOfBirth: { type: string, format: date, example: '2016-05-01' }
+        classId: { type: string, format: uuid }
+    ScoreValues:
+      type: object
+      properties: { classScore: { type: number, example: 25 }, examScore: { type: number, example: 70 } }
+  responses:
+    Ok: { description: Success, content: { application/json: { schema: { type: object } } } }
+    Error: { description: Error with a message, content: { application/json: { schema: { type: object, properties: { message: { type: string } } } } } }

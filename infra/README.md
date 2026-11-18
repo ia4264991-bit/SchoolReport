@@ -54,6 +54,15 @@ Secrets Manager ~$2, CloudFront/logs/S3 ~$1–3 at school scale → **about $35*
 - **Shell on the server** (no SSH): `aws ssm start-session --profile schoolreport --target <InstanceId>`.
 - **Audit:** `GET /api/audit` (school admins: their school; superadmin: all).
 
+## Security scan (HawkScan)
+
+Runs on GitHub, never against production: **Actions → Security scan → Run workflow** (also every
+Monday). It starts a fresh API + PostgreSQL on the runner, seeds one demo school
+(`scripts/scan-seed.mjs`), and scans it with `stackhawk.yml` + the hand-written
+`schoolreport-ges-backend-fixed/openapi.yaml`. Results: StackHawk dashboard, app "SchoolReport", env CI.
+Needs the repo secret `HAWK_API_KEY`. **Keep `openapi.yaml` in step with the routes** — a route that is
+missing from it is not scanned.
+
 ## Email (after buying the domain)
 
 1. SES (same Region) → Identities → create the domain identity; add the DKIM CNAMEs at your DNS host.

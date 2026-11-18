@@ -63,3 +63,6 @@ coverage/
 # =========================
 infra/aws/params.*.json
 !infra/aws/params.example.json
+
+# Local security-scan values (admin token, ids)
+scan.env

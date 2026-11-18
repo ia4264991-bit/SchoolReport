@@ -1,0 +1,61 @@
+# HawkScan (StackHawk DAST) — scans a LOCAL copy of the API, never production.
+# How to run: infra/README.md → "Security scan". Values in ${...} come from the scan's
+# environment (seeded ids and a pre-issued admin token); nothing secret lives in this file.
+app:
+  applicationId: ${APP_ID:f45d1766-6b8e-4de8-b0f3-4bf6173c4b42}
+  env: ${APP_ENV:Development}
+  host: ${APP_HOST:http://localhost:3001}
+  openApiConf:
+    # Hand-written spec; it leaves out the two routes that would end the scan's own session.
+    filePath: schoolreport-ges-backend-fixed/openapi.yaml
+    customVariables:
+      - field: term
+        values: ["1"]
+      - field: classId
+        values: ["${SCAN_CLASS_ID}"]
+      - field: studentId
+        values: ["${SCAN_STUDENT_ID}"]
+      - field: schoolId
+        values: ["${SCAN_SCHOOL_ID}"]
+      - field: id
+        path: '/api/students/[^/]+$'
+        values: ["${SCAN_STUDENT_ID}"]
+      - field: id
+        path: '/api/school/classes/[^/]+$'
+        values: ["${SCAN_CLASS_ID}"]
+      - field: id
+        path: '/api/school/subjects/[^/]+$'
+        values: ["${SCAN_SUBJECT_ID}"]
+      - field: id
+        path: '/api/(school|superadmin)/schools/'
+        values: ["${SCAN_SCHOOL_ID}"]
+      - field: id
+        path: '/api/users/[^/]+$'
+        values: ["${SCAN_USER_ID}"]
+      - field: id
+        path: '/api/scores/[^/]+$'
+        values: ["${SCAN_SCORE_ID}"]
+  authentication:
+    # Pre-issued token for the seeded school admin: login is never replayed, so the
+    # scanner's mutated requests cannot lock it out.
+    external:
+      values:
+        - type: TOKEN
+          tokenType: Bearer
+          value:
+            name: Authorization
+            val: ${SCAN_TOKEN}
+    testPath:
+      path: /api/auth/me
+      success: ".*200.*"
+      requestMethod: GET
+
+tags:
+  - name: _STACKHAWK_GIT_COMMIT_SHA
+    value: ${COMMIT_SHA:none}
+  - name: _STACKHAWK_GIT_BRANCH
+    value: ${BRANCH_NAME:none}
+  - name: _STACKHAWK_AGENT
+    value: ${HAWK_AGENT:none}
+  - name: git_origin
+    value: ia4264991-bit/schoolreport
