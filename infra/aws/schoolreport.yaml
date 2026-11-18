@@ -607,6 +607,30 @@ Resources:
     Properties:
       DisplayName: !Sub 'SchoolReport ${EnvName} alarms'
 
+  AlarmTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: lets SES post bounce/complaint notices for the domain to the alarm email (no-reply@ has no mailbox)
+        must: [keep aws:SourceAccount condition - only this account's SES may publish]
+    Properties:
+      Topics: [!Ref AlarmTopic]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudWatchAlarms
+            Effect: Allow
+            Principal: { Service: cloudwatch.amazonaws.com }
+            Action: sns:Publish
+            Resource: !Ref AlarmTopic
+            Condition: { StringEquals: { 'aws:SourceAccount': !Ref 'AWS::AccountId' } }
+          - Sid: AllowSesFeedback
+            Effect: Allow
+            Principal: { Service: ses.amazonaws.com }
+            Action: sns:Publish
+            Resource: !Ref AlarmTopic
+            Condition: { StringEquals: { 'aws:SourceAccount': !Ref 'AWS::AccountId' } }
+
   AlarmEmailSubscription:
     Type: AWS::SNS::Subscription
     Properties:
