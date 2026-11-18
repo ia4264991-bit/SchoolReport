@@ -1,4 +1,4 @@
-import { Outlet, useNavigate, useLocation } from 'react-router-dom'
+import { Outlet, useNavigate, useLocation } from 'react-router'
 import { useAuthStore } from '@/store/authStore'
 import { useSchoolStore } from '@/store/schoolStore'
 import { useEffect, useState } from 'react'
@@ -32,6 +32,7 @@ function getNavItems(role) {
     { path: '/students',   icon: Users,            label: 'Students',        roles: ['admin','head','teacher'] },
     { path: '/scores',     icon: BookOpen,         label: 'Score Entry',     roles: ['admin','head','teacher'] },
     { path: '/reports',    icon: FileText,         label: 'Reports',         roles: ['admin','head','teacher'] },
+    { path: '/my-report',  icon: FileText,         label: 'My Report',       roles: ['student'] },
     { path: '/users',      icon: ClipboardList,    label: 'User Mgmt',       roles: ['admin'] },
     { path: '/settings',   icon: Settings,         label: 'Settings',        roles: ['admin','head'] },
   ]

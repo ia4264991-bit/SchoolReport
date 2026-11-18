@@ -16,11 +16,13 @@ export default function UsersPage() {
   const [loading, setLoading] = useState(true)
   const [modal, setModal] = useState(false)
   const [editUser, setEditUser] = useState(null)
-  const [form, setForm] = useState({ fullName: '', email: '', role: 'teacher', classId: '', notes: '' })
+  const [form, setForm] = useState({ fullName: '', email: '', role: 'teacher', classId: '', studentId: '', notes: '' })
   const [err, setErr] = useState('')
   const [saving, setSaving] = useState(false)
   // Temporary credentials to show once (in case the email does not arrive).
   const [issued, setIssued] = useState(null)
+  // Student logins: the students of the chosen class, to link the login to one of them.
+  const [classStudents, setClassStudents] = useState([])
 
   useEffect(() => {
     fetchClasses()
@@ -30,6 +32,16 @@ export default function UsersPage() {
       .finally(() => setLoading(false))
   }, [])
 
+  useEffect(() => {
+    if (!modal || form.role !== 'student' || !form.classId) { setClassStudents([]); return }
+    api.get('/students', { params: { classId: form.classId } })
+      .then(r => setClassStudents(r.data))
+      .catch(() => setClassStudents([]))
+  }, [modal, form.role, form.classId])
+
+  // Students that already have a login (other than the one being edited).
+  const linkedStudentIds = new Set(users.filter(u => u.studentId && u._id !== editUser?._id).map(u => u.studentId))
+
   const copy = async (text) => {
     try { await navigator.clipboard.writeText(text); toast.success('Copied!') }
     catch { toast.error('Copy failed — select the text and copy it manually.') }
@@ -37,14 +49,14 @@ export default function UsersPage() {
 
   const openAdd = () => {
     setEditUser(null)
-    setForm({ fullName: '', email: '', role: 'teacher', classId: '', notes: '' })
+    setForm({ fullName: '', email: '', role: 'teacher', classId: '', studentId: '', notes: '' })
     setErr('')
     setModal(true)
   }
 
   const openEdit = (u) => {
     setEditUser(u)
-    setForm({ fullName: u.fullName, email: u.email, role: u.role, classId: u.classId || '', notes: u.notes || '' })
+    setForm({ fullName: u.fullName, email: u.email, role: u.role, classId: u.classId || '', studentId: u.studentId || '', notes: u.notes || '' })
     setErr('')
     setModal(true)
   }
@@ -54,15 +66,22 @@ export default function UsersPage() {
     if (!editUser && !form.email.trim()) return 'Email is required.'
     if (!editUser && !/\S+@\S+\.\S+/.test(form.email)) return 'Enter a valid email address.'
     if (form.role === 'teacher' && !form.classId) return 'Please assign a class to this teacher.'
+    if (form.role === 'student' && !form.studentId) return 'Choose which student this login is for.'
     return ''
   }
 
+  const pickStudent = (id) => {
+    const st = classStudents.find(s => s._id === id)
+    // Pre-fill the name from the student record (it can still be edited, e.g. for a parent).
+    setForm(f => ({ ...f, studentId: id, fullName: f.fullName.trim() ? f.fullName : (st?.fullName || '') }))
+  }
   const save = async () => {
     const error = validate()
     if (error) return setErr(error)
     setSaving(true)
     try {
       const payload = { ...form, fullName: form.fullName.trim(), email: form.email.trim() }
+      if (payload.role !== 'student') delete payload.studentId // only student logins link to a student
       if (editUser) {
         delete payload.email // email can't be edited here
         const { data } = await api.put(`/users/${editUser._id}`, payload)
@@ -143,7 +162,10 @@ export default function UsersPage() {
                 <Td className="text-gray-500 text-xs">{u.email}</Td>
                 <Td><Badge variant={ROLE_COLORS[u.role]}>{ROLE_LABELS[u.role]}</Badge></Td>
                 <Td className="text-gray-500 text-xs">
-                  {u.role === 'teacher' ? (classes.find(c => c._id === u.classId)?.name || '—') : '—'}
+                  {u.role === 'teacher' || u.role === 'student' ? (classes.find(c => c._id === u.classId)?.name || '—') : '—'}
+                  {u.role === 'student' && !u.studentId && (
+                    <span className="ml-1 text-[10px] text-amber bg-amber-light px-1.5 py-0.5 rounded font-semibold">not linked</span>
+                  )}
                 </Td>
                 <Td>
                   <Badge variant={u.isActive ? 'green' : 'red'}>
@@ -207,16 +229,33 @@ export default function UsersPage() {
               <option value="admin">Admin</option>
               <option value="head">Head Teacher</option>
               <option value="teacher">Class Teacher</option>
-              <option value="student">Student</option>
+              <option value="student">Student / Parent</option>
             </Select>
           </Field>
           {(form.role === 'teacher' || form.role === 'student') && (
-            <Field label="Assigned Class">
-              <Select value={form.classId} onChange={e => setForm(f => ({ ...f, classId: e.target.value }))}>
+            <Field label={form.role === 'student' ? 'Class' : 'Assigned Class'}>
+              <Select value={form.classId} onChange={e => setForm(f => ({ ...f, classId: e.target.value, studentId: '' }))}>
                 <option value="">Select class…</option>
                 {classes.map(c => <option key={c._id} value={c._id}>{c.name}</option>)}
               </Select>
             </Field>
+          )}
+          {form.role === 'student' && (
+            <div className="col-span-2">
+              <Field label="Student this login is for">
+                <Select value={form.studentId} onChange={e => pickStudent(e.target.value)} disabled={!form.classId}>
+                  <option value="">{form.classId ? 'Select student…' : 'Choose a class first'}</option>
+                  {classStudents.map(s => (
+                    <option key={s._id} value={s._id} disabled={linkedStudentIds.has(s._id)}>
+                      {s.fullName}{linkedStudentIds.has(s._id) ? ' — already has a login' : ''}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <p className="text-[11px] text-gray-400 -mt-2 mb-2">
+                This login can only see this student's own report. Share it with the student or a parent.
+              </p>
+            </div>
           )}
           <div className="col-span-2">
             <Field label="Notes (optional)">

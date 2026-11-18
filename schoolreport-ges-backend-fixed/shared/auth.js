@@ -41,7 +41,7 @@ function authenticate({ allowPendingPasswordChange }) {
     if (!isUuid(payload?.id)) return res.status(401).json({ message: 'Invalid token.' })
 
     const { rows } = await query(
-      `SELECT u.id, u.email, u.role, u.school_id, u.class_id, u.full_name, u.token_version,
+      `SELECT u.id, u.email, u.role, u.school_id, u.class_id, u.student_id, u.full_name, u.token_version,
               u.is_active, u.must_change_password, s.is_active AS school_active
          FROM users u
          LEFT JOIN schools s ON s.id = u.school_id
@@ -68,6 +68,7 @@ function authenticate({ allowPendingPasswordChange }) {
       role: u.role,
       schoolId: u.school_id,
       classId: u.class_id,
+      studentId: u.student_id,
       fullName: u.full_name,
       mustChangePassword: u.must_change_password,
       tokenVersion: u.token_version,

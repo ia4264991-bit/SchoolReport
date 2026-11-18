@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate } from 'react-router'
 import ProtectedRoute from '@/components/auth/ProtectedRoute'
 import AppLayout from '@/components/layout/AppLayout'
 import LoginPage from '@/pages/LoginPage'
@@ -12,6 +12,7 @@ import ReportsPage from '@/pages/ReportsPage'
 import UsersPage from '@/pages/UsersPage'
 import SettingsPage from '@/pages/SettingsPage'
 import SuperAdminPage from '@/pages/SuperAdminPage'
+import MyReportPage from '@/pages/MyReportPage'
 
 export default function App() {
   return (
@@ -36,6 +37,9 @@ export default function App() {
         } />
         <Route path="/reports" element={
           <ProtectedRoute roles={['admin','head','teacher']}><ReportsPage /></ProtectedRoute>
+        } />
+        <Route path="/my-report" element={
+          <ProtectedRoute roles={['student']}><MyReportPage /></ProtectedRoute>
         } />
         <Route path="/classes" element={
           <ProtectedRoute roles={['admin','head']}><ClassesPage /></ProtectedRoute>

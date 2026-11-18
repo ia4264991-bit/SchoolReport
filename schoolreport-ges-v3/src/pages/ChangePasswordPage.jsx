@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { useAuthStore, homePath } from '@/store/authStore'
 import api from '@/lib/api'
 import { Shield, Eye, EyeOff, Lock } from 'lucide-react'

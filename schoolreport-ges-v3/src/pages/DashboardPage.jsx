@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { useAuthStore } from '@/store/authStore'
 import { useSchoolStore } from '@/store/schoolStore'
 import { Card, CardTitle, Metric, Alert, PageHeader } from '@/components/ui'
@@ -11,6 +11,7 @@ const quickLinks = [
   { icon: BookOpen,      label: 'Enter Scores',      path: '/scores',   roles: ['admin','head','teacher'] },
   { icon: FileText,      label: 'View Reports',      path: '/reports',  roles: ['admin','head','teacher'] },
   { icon: GraduationCap, label: 'Manage Classes',    path: '/classes',  roles: ['admin','head'] },
+  { icon: FileText,      label: 'View My Report',    path: '/my-report', roles: ['student'] },
 ]
 
 export default function DashboardPage() {
@@ -18,10 +19,12 @@ export default function DashboardPage() {
   const { settings, logoUrl } = useSchoolStore()
   const navigate = useNavigate()
   const [stats, setStats] = useState(null)
+  const isStudent = user?.role === 'student'
 
   useEffect(() => {
-    api.get('/school/stats').then(r => setStats(r.data)).catch(() => {})
-  }, [])
+    // School-wide counts are for staff; a student's dashboard just points to their report.
+    if (!isStudent) api.get('/school/stats').then(r => setStats(r.data)).catch(() => {})
+  }, [isStudent])
 
   const greeting = () => {
     const h = new Date().getHours()
@@ -52,13 +55,21 @@ export default function DashboardPage() {
         </Alert>
       )}
 
-      {/* Metrics */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
-        <Metric icon={GraduationCap} value={stats?.totalClasses ?? '—'} label="Classes" color="blue" />
-        <Metric icon={Users}         value={stats?.totalStudents ?? '—'} label="Students" color="green" />
-        <Metric icon={BookOpen}      value={stats?.subjectsCount ?? '—'} label="Subjects" color="amber" />
-        <Metric icon={FileText}      value={stats?.reportsGenerated ?? '—'} label="Students Scored This Term" color="blue" />
-      </div>
+      {isStudent && (
+        <Alert variant="info">
+          📄 Your report for each term is under <strong>My Report</strong> — you can print it or save it as PDF.
+        </Alert>
+      )}
+
+      {/* Metrics (staff only) */}
+      {!isStudent && (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+          <Metric icon={GraduationCap} value={stats?.totalClasses ?? '—'} label="Classes" color="blue" />
+          <Metric icon={Users}         value={stats?.totalStudents ?? '—'} label="Students" color="green" />
+          <Metric icon={BookOpen}      value={stats?.subjectsCount ?? '—'} label="Subjects" color="amber" />
+          <Metric icon={FileText}      value={stats?.reportsGenerated ?? '—'} label="Students Scored This Term" color="blue" />
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Quick Actions */}

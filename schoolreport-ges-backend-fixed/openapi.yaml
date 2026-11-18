@@ -293,6 +293,14 @@ paths:
       responses: { '200': { $ref: '#/components/responses/Ok' } }
 
   # ── reports ───────────────────────────────────────────────────────────
+  /api/reports/me:
+    get:
+      tags: [reports]
+      summary: A student login's own report (student role only)
+      parameters:
+        - { name: term, in: query, schema: { type: string, enum: ['1', '2', '3'], example: '1' } }
+        - { $ref: '#/components/parameters/academicYear' }
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '403': { $ref: '#/components/responses/Error' }, '404': { $ref: '#/components/responses/Error' } }
   /api/reports/student/{studentId}/{term}:
     get:
       tags: [reports]
@@ -332,6 +340,7 @@ components:
         email: { type: string, format: email, example: new.teacher@example.com }
         role: { type: string, enum: [admin, head, teacher, student], example: teacher }
         classId: { type: string, format: uuid }
+        studentId: { type: string, format: uuid, description: Required for role student - the student this login is for }
         notes: { type: string }
         isActive: { type: boolean }
     ClassInput:

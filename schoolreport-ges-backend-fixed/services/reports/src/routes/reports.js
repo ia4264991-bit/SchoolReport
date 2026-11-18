@@ -256,6 +256,68 @@ scoresRouter.delete('/:classId/:term', requireRole('admin'), ah(async (req, res)
 export const reportsRouter = Router()
 reportsRouter.use(requireAuth)
 
+/* GET /api/reports/me?term=1&academicYear=2026/2027 — a student login's OWN report.
+   The class ranking is computed here so the student never receives classmates' marks. */
+reportsRouter.get('/me', requireSchool, requireRole('student'), ah(async (req, res) => {
+  if (!req.user.studentId) {
+    throw new HttpError(404, 'Your login is not linked to a student yet. Ask your school admin.')
+  }
+  const settings = await ensureSettings(sid(req))
+  const term = req.query.term ? termParam(String(req.query.term)) : settings.term
+  const academicYear = req.query.academicYear
+    ? str(req.query.academicYear, 'Academic year', { max: 20 })
+    : settings.academic_year
+
+  const { rows: [student] } = await query(
+    `SELECT s.id, s.full_name, s.gender, s.date_of_birth, s.class_id, c.name AS class_name, c.level AS class_level
+       FROM students s LEFT JOIN classes c ON c.id = s.class_id
+      WHERE s.id = $1 AND s.school_id = $2 AND s.is_active`,
+    [req.user.studentId, sid(req)]
+  )
+  if (!student) throw new HttpError(404, 'Your student record is no longer active. Ask your school admin.')
+
+  const { rows: subjects } = await query(
+    'SELECT id, name, max_class_score FROM subjects WHERE school_id = $1 ORDER BY sort_order, name',
+    [sid(req)]
+  )
+  // Every active classmate's scores for this term — used only to compute the ranking.
+  const { rows: classScores } = await query(
+    `SELECT st.id AS student_id, sc.subject_id, sc.class_score, sc.exam_score
+       FROM students st
+       LEFT JOIN scores sc ON sc.student_id = st.id AND sc.academic_year = $3 AND sc.term = $4
+      WHERE st.school_id = $1 AND st.class_id = $2 AND st.is_active`,
+    [sid(req), student.class_id, academicYear, term]
+  )
+
+  // Average of the weighted subject totals (a missing score counts as 0) — the same rule as
+  // the Reports page; averages equal to one decimal share a position (1st, 2nd, 2nd, 4th).
+  const maxBySubject = new Map(subjects.map((s) => [s.id, s.max_class_score]))
+  const totals = new Map()
+  for (const r of classScores) {
+    if (!totals.has(r.student_id)) totals.set(r.student_id, 0)
+    if (r.subject_id && maxBySubject.has(r.subject_id)) {
+      totals.set(r.student_id, totals.get(r.student_id) + weightedTotal(r.class_score, r.exam_score, maxBySubject.get(r.subject_id)))
+    }
+  }
+  const avg = (id) => (subjects.length ? totals.get(id) / subjects.length : 0)
+  const rounded = (id) => Math.round(avg(id) * 10)
+  const mine = rounded(student.id)
+  const position = 1 + [...totals.keys()].filter((id) => rounded(id) > mine).length
+
+  res.json({
+    academicYear,
+    term,
+    student: { fullName: student.full_name, gender: student.gender, dateOfBirth: student.date_of_birth },
+    class: { name: student.class_name || '', level: student.class_level || '' },
+    subjects: subjects.map((s) => ({ _id: s.id, name: s.name, maxClassScore: s.max_class_score })),
+    scores: classScores
+      .filter((r) => r.student_id === student.id && r.subject_id)
+      .map((r) => ({ subjectId: r.subject_id, classScore: r.class_score, examScore: r.exam_score })),
+    position,
+    classSize: totals.size,
+  })
+}))
+
 /* GET /api/reports/student/:studentId/:term */
 reportsRouter.get('/student/:studentId/:term', requireSchool, ah(studentScores))
 

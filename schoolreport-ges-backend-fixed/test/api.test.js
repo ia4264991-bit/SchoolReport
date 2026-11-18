@@ -421,12 +421,55 @@ test('moving a teacher to another class takes effect immediately', async () => {
   await api('PUT', `/api/users/${s.teacherId}`, { token: s.adminA, body: { classId: s.c4A } })
 })
 
-test('student logins cannot read other students\' records', async () => {
-  const u = await api('POST', '/api/users', { token: s.adminA, body: { fullName: 'Pupil Login', email: 'pupil@alpha.test', role: 'student', classId: s.c4A } })
+test('student logins: linked to one student, see only their own report', async () => {
+  // Linking rules.
+  const noLink = await api('POST', '/api/users', { token: s.adminA, body: { fullName: 'No Link', email: 'nolink@alpha.test', role: 'student' } })
+  assert.equal(noLink.status, 400, 'a student login must name its student')
+  assert.equal((await api('POST', '/api/users', { token: s.adminB, body: { fullName: 'X', email: 'x@beta.test', role: 'student', studentId: s.akosua } })).status, 400, 'not another school\'s student')
+  assert.equal((await api('POST', '/api/users', { token: s.adminA, body: { fullName: 'X', email: 'x2@alpha.test', role: 'head', studentId: s.akosua } })).status, 400, 'only student logins link')
+
+  const u = await api('POST', '/api/users', { token: s.adminA, body: { fullName: 'Akosua (parent login)', email: 'pupil@alpha.test', role: 'student', studentId: s.akosua, classId: s.c4B } })
+  assert.equal(u.status, 201, JSON.stringify(u.data))
+  assert.equal(u.data.user.studentId, s.akosua)
+  assert.equal(u.data.user.classId, s.c4A, 'class follows the student, whatever was sent')
+  assert.equal((await api('POST', '/api/users', { token: s.adminA, body: { fullName: 'Dup', email: 'dup@alpha.test', role: 'student', studentId: s.akosua } })).status, 409, 'one login per student')
   const tok = await firstLogin('pupil@alpha.test', u.data.credentials.password)
+
+  // Own report: only their marks, plus position computed server-side.
+  const r = await api('GET', '/api/reports/me?term=2', { token: tok })
+  assert.equal(r.status, 200, JSON.stringify(r.data))
+  assert.equal(r.data.student.fullName, 'Akosua Boateng')
+  assert.equal(r.data.class.name, 'Class 4A')
+  assert.equal(r.data.term, '2')
+  assert.equal(r.data.subjects.length, 2)
+  assert.ok(r.data.scores.length >= 1 && r.data.scores.every((x) => s.math === x.subjectId || s.eng === x.subjectId))
+  assert.equal(r.data.classSize, 3)
+  assert.ok(Number.isInteger(r.data.position) && r.data.position >= 1 && r.data.position <= 3)
+  const raw = JSON.stringify(r.data)
+  for (const other of [s.kwame, s.yaw, 'Kwame', 'Yaw']) assert.ok(!raw.includes(other), `no classmate data (${other})`)
+  // Default term = the school's current term.
+  assert.equal((await api('GET', '/api/reports/me', { token: tok })).data.term, '2')
+
+  // Nothing else is open to a student login.
   assert.equal((await api('GET', '/api/students', { token: tok })).status, 403)
   assert.equal((await api('GET', `/api/scores/${s.c4A}/2`, { token: tok })).status, 403)
   assert.equal((await api('GET', `/api/reports/class/${s.c4A}/2`, { token: tok })).status, 403)
+  assert.equal((await api('GET', `/api/scores/student/${s.kwame}/2`, { token: tok })).status, 403)
+  // Staff use the class reports, not /me.
+  assert.equal((await api('GET', '/api/reports/me', { token: s.adminA })).status, 403)
+
+  // Removing a student from the roster switches their login off.
+  const extra = await api('POST', '/api/students', { token: s.adminA, body: { fullName: 'Leaving Pupil', gender: 'F', classId: s.c4A } })
+  const lu = await api('POST', '/api/users', { token: s.adminA, body: { fullName: 'Leaving Pupil', email: 'leaving@alpha.test', role: 'student', studentId: extra.data._id } })
+  const ltok = await firstLogin('leaving@alpha.test', lu.data.credentials.password)
+  assert.equal((await api('GET', '/api/reports/me', { token: ltok })).status, 200)
+  assert.equal((await api('DELETE', `/api/students/${extra.data._id}`, { token: s.adminA })).status, 200)
+  assert.equal((await api('GET', '/api/reports/me', { token: ltok })).status, 401, 'login deactivated with the student')
+
+  // Changing a student login to staff clears its link.
+  const changed = await api('PUT', `/api/users/${lu.data.user._id}`, { token: s.adminA, body: { role: 'head' } })
+  assert.equal(changed.status, 200, JSON.stringify(changed.data))
+  assert.equal(changed.data.studentId, null)
 })
 
 test('password reset code: works once, and locks after 5 wrong guesses', async () => {

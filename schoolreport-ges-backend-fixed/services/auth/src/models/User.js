@@ -2,7 +2,7 @@ import bcrypt from 'bcryptjs'
 import crypto from 'node:crypto'
 
 /** Columns safe to send to the browser (no password or reset-code fields). */
-export const USER_COLUMNS = `id, full_name, email, username, role, school_id, class_id, notes,
+export const USER_COLUMNS = `id, full_name, email, username, role, school_id, class_id, student_id, notes,
   is_active, must_change_password, created_at, updated_at`
 
 export const SCHOOL_ROLES = ['admin', 'head', 'teacher', 'student']
@@ -38,6 +38,7 @@ export function userToApi(row) {
     role: row.role,
     schoolId: row.school_id,
     classId: row.class_id,
+    studentId: row.student_id ?? null,
     notes: row.notes,
     isActive: row.is_active,
     mustChangePassword: row.must_change_password,

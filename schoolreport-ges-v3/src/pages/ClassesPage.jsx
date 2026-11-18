@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { useSchoolStore } from '@/store/schoolStore'
 import { Card, Spinner, EmptyState, Badge, PageHeader } from '@/components/ui'
 import { GraduationCap, Users, ChevronRight } from 'lucide-react'

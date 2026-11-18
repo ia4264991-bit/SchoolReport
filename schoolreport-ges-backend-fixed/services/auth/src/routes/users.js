@@ -26,6 +26,27 @@ async function checkClassId(classId, schoolId) {
   return classId
 }
 
+/**
+ * A student login must point at one active student record of the admin's school.
+ * Returns that student's row (its class becomes the login's class).
+ */
+async function checkStudentId(studentId, schoolId) {
+  if (!isUuid(studentId)) throw new HttpError(400, 'Choose the student this login is for.')
+  const { rows } = await query(
+    'SELECT id, class_id, full_name FROM students WHERE id = $1 AND school_id = $2 AND is_active',
+    [studentId, schoolId]
+  )
+  if (!rows[0]) throw new HttpError(400, 'Student not found in your school.')
+  return rows[0]
+}
+
+/** Friendly messages for the unique indexes on users. */
+function conflict(err) {
+  if (err.code !== '23505') return err
+  if (String(err.constraint).includes('student')) return new HttpError(409, 'This student already has a login.')
+  return new HttpError(409, 'A user with this email already exists.')
+}
+
 async function schoolName(schoolId) {
   const { rows } = await query('SELECT school_name FROM school_settings WHERE school_id = $1', [schoolId])
   return rows[0]?.school_name || 'Your School'
@@ -57,24 +78,31 @@ router.post('/', requireAuth, requireRole('admin'), ah(async (req, res) => {
   const email = requiredStr(b.email, 'Email').toLowerCase()
   if (!isEmail(email)) throw new HttpError(400, 'Enter a valid email address.')
   const role = checkRole(b.role)
-  const classId = await checkClassId(b.classId, req.user.schoolId)
+  let classId = await checkClassId(b.classId, req.user.schoolId)
+  let studentId = null
+  if (role === 'student') {
+    const student = await checkStudentId(b.studentId, req.user.schoolId)
+    studentId = student.id
+    classId = student.class_id // a student login follows its student's class
+  } else if (b.studentId) {
+    throw new HttpError(400, 'Only student logins can be linked to a student.')
+  }
   const notes = str(b.notes, 'Notes', { max: 1000 })
 
   const tempPassword = generateTempPassword()
   let user
   try {
     const { rows } = await query(
-      `INSERT INTO users (full_name, email, username, password_hash, role, school_id, class_id, notes, must_change_password)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true)
+      `INSERT INTO users (full_name, email, username, password_hash, role, school_id, class_id, student_id, notes, must_change_password)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true)
        RETURNING ${USER_COLUMNS}`,
-      [fullName, email, makeUsername(email), await hashPassword(tempPassword), role, req.user.schoolId, classId, notes]
+      [fullName, email, makeUsername(email), await hashPassword(tempPassword), role, req.user.schoolId, classId, studentId, notes]
     )
     user = rows[0]
   } catch (err) {
-    if (err.code === '23505') throw new HttpError(409, 'A user with this email already exists.')
-    throw err
+    throw conflict(err)
   }
-  await audit(req, 'user.create', { targetType: 'user', targetId: user.id, details: { email, role, classId } })
+  await audit(req, 'user.create', { targetType: 'user', targetId: user.id, details: { email, role, classId, studentId } })
 
   sendWelcomeEmail({
     to: email, fullName, email, tempPassword, role,
@@ -106,6 +134,18 @@ router.put('/:id', requireAuth, requireRole('admin'), ah(async (req, res) => {
     fields.role = checkRole(b.role)
   }
   if (b.classId !== undefined) fields.class_id = await checkClassId(b.classId, req.user.schoolId)
+
+  // Student link: required for student logins, cleared for every other role.
+  const finalRole = fields.role || target.role
+  if (finalRole === 'student') {
+    const wanted = b.studentId !== undefined ? b.studentId : target.student_id
+    const student = await checkStudentId(wanted, req.user.schoolId)
+    if (student.id !== target.student_id) fields.student_id = student.id
+    fields.class_id = student.class_id
+  } else {
+    if (b.studentId) throw new HttpError(400, 'Only student logins can be linked to a student.')
+    if (target.student_id) fields.student_id = null
+  }
   if (b.notes !== undefined) fields.notes = str(b.notes, 'Notes', { max: 1000 })
   if (typeof b.isActive === 'boolean' && b.isActive !== target.is_active) {
     if (isSelf) throw new HttpError(400, 'You cannot deactivate your own account.')
@@ -128,8 +168,7 @@ router.put('/:id', requireAuth, requireRole('admin'), ah(async (req, res) => {
     }
     res.json(userToApi(rows[0]))
   } catch (err) {
-    if (err.code === '23505') throw new HttpError(409, 'Another user already has this email.')
-    throw err
+    throw conflict(err)
   }
 }))
 

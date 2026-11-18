@@ -115,8 +115,10 @@ that has already run in production. Migrations run automatically on startup (and
 | School settings, subjects, max marks | ✅ | ✅ | ❌ |
 | Add/remove classes | ✅ | ❌ | ❌ |
 
-`student` logins exist but are not yet linked to a student record, so they can only see the
-dashboard.
+**Student / parent logins** are linked to exactly one student record (User Mgmt → role
+"Student / Parent" → class → student). They see only **My Report**: that student's own marks for
+each term, plus their position in the class — the ranking is computed on the server, so no
+classmate's marks ever reach the browser. Removing the student deactivates the login.
 
 ---
 
@@ -138,6 +140,7 @@ dashboard.
 | PUT | `/scores/:id` · DELETE `/scores/:classId/:term` (admin) | staff |
 | GET | `/reports/class/:classId/:term` · `/reports/student/:studentId/:term` | staff |
 | GET | `/reports/school/:schoolId/analytics` | admin, head, superadmin |
+| GET | `/reports/me?term=` | student logins: their own report + position only |
 | GET | `/school/logo` | school users · PUT (raw PNG/JPEG/WebP ≤ 512 KB) and DELETE: admin, head |
 | GET | `/audit?limit=&before=&action=&targetType=&targetId=` | admin (own school), superadmin (all) |
 | GET | `/health` (database check) · `/health/live` (process only) | anyone |

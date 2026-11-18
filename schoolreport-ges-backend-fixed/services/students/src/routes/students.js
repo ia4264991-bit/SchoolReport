@@ -143,7 +143,15 @@ router.put('/:id', requireRole('admin', 'head', 'teacher'), ah(async (req, res) 
 router.delete('/:id', requireRole('admin', 'head'), ah(async (req, res) => {
   const student = await findStudent(req)
   await query('UPDATE students SET is_active = false WHERE id = $1', [student.id])
-  await audit(req, 'student.remove', { targetType: 'student', targetId: student.id, details: { name: student.full_name } })
+  // A removed student's own login (if any) stops working too.
+  const logins = await query(
+    'UPDATE users SET is_active = false WHERE student_id = $1 AND school_id = $2 AND is_active RETURNING id',
+    [student.id, sid(req)]
+  )
+  await audit(req, 'student.remove', {
+    targetType: 'student', targetId: student.id,
+    details: { name: student.full_name, loginsDeactivated: logins.rowCount },
+  })
   res.json({ message: 'Student removed.' })
 }))
 
