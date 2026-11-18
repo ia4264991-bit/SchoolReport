@@ -36,7 +36,7 @@ else
   RELEASE="$(date -u +%Y%m%d-%H%M)-$SHA"
   TMP=$(mktemp -d)
   trap 'rm -rf "$TMP"' EXIT
-  git archive --format=tar.gz -o "$TMP/$RELEASE.tar.gz" HEAD schoolreport-ges-backend-fixed infra/server
+  git archive --format=tar.gz -o "$(cygpath -w "$TMP/$RELEASE.tar.gz")" HEAD schoolreport-ges-backend-fixed infra/server
   echo "Uploading $RELEASE ($(du -h "$TMP/$RELEASE.tar.gz" | cut -f1))"
   "${AWS[@]}" s3 cp --only-show-errors "$(cygpath -w "$TMP/$RELEASE.tar.gz")" "s3://$BUCKET/releases/$RELEASE.tar.gz"
   COMMANDS=$(printf '%s\n' \
@@ -49,7 +49,7 @@ else
 fi
 
 PARAMS=$(mktemp)
-node -e 'const fs=require("fs");fs.writeFileSync(process.argv[1],JSON.stringify({commands:process.argv[2].trim().split("\n"),executionTimeout:["1800"]}))' "$PARAMS" "$COMMANDS"
+node -e 'const fs=require("fs");fs.writeFileSync(process.argv[1],JSON.stringify({commands:process.argv[2].trim().split("\n"),executionTimeout:["1800"]}))' "$(cygpath -w "$PARAMS")" "$COMMANDS"
 CMD_ID=$("${AWS[@]}" ssm send-command --instance-ids "$INSTANCE" --document-name AWS-RunShellScript \
   --comment "deploy $RELEASE" --parameters "file://$(cygpath -w "$PARAMS")" \
   --query Command.CommandId --output text)

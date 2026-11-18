@@ -62,7 +62,7 @@ node -e '
   const fs = require("fs")
   const base = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).filter((p) => !["AmiId","CloudFrontPrefixListId","EnvName"].includes(p.ParameterKey))
   fs.writeFileSync(process.argv[2], JSON.stringify([...base, ...JSON.parse(process.argv[3])]))
-' "$PARAMS_FILE" "$MERGED" "$EXTRA"
+' "$(cygpath -w "$PARAMS_FILE")" "$(cygpath -w "$MERGED")" "$EXTRA"   # Windows paths for node
 
 CS="sr-$(date -u +%Y%m%d-%H%M%S)"
 "${AWS[@]}" cloudformation create-change-set --stack-name "$STACK" --change-set-name "$CS" \

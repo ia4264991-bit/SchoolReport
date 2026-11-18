@@ -40,7 +40,8 @@ EOF
 
 TMP=$(mktemp)
 printf '%s' "$RULES" >"$TMP"
-ARN=$("${AWS[@]}" create-web-acl --name "$NAME" --scope CLOUDFRONT \
+# raw-in-base64-out: SearchString is a binary field; let the CLI take it as plain text.
+ARN=$("${AWS[@]}" create-web-acl --cli-binary-format raw-in-base64-out --name "$NAME" --scope CLOUDFRONT \
   --default-action Allow={} \
   --visibility-config "$(vis "$NAME")" \
   --rules "file://$(cygpath -w "$TMP")" \
