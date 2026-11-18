@@ -1,9 +1,76 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useSchoolStore } from '@/store/schoolStore'
 import { useAuthStore } from '@/store/authStore'
 import api, { errorMessage } from '@/lib/api'
+import { prepareLogo, LOGO_ACCEPT } from '@/lib/logo'
 import { Card, SectionHeader, Button, Field, Input, Select, Table, Tr, Td, Modal, Spinner, Alert, PageHeader } from '@/components/ui'
-import { Save, Plus, Trash2, BookOpen, GraduationCap, Settings } from 'lucide-react'
+import { Save, Plus, Trash2, BookOpen, GraduationCap, Settings, ImagePlus, Building2 } from 'lucide-react'
+
+/** Upload / change / remove the school logo (shown on reports and in the app). */
+function LogoEditor() {
+  const { logoUrl, loadLogo, settings } = useSchoolStore()
+  const fileRef = useRef(null)
+  const [busy, setBusy] = useState(false)
+
+  const choose = async (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = '' // let the same file be picked again
+    if (!file) return
+    setBusy(true)
+    try {
+      const png = await prepareLogo(file)
+      const { data } = await api.put('/school/logo', png, { headers: { 'Content-Type': 'image/png' } })
+      await loadLogo(data.logoVersion)
+      toast.success('Logo saved — it now appears on reports.')
+    } catch (err) {
+      toast.error(err.response ? errorMessage(err, 'Failed to save the logo') : err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const remove = async () => {
+    if (!confirm('Remove the school logo from reports and the app?')) return
+    setBusy(true)
+    try {
+      await api.delete('/school/logo')
+      await loadLogo(null)
+      toast.success('Logo removed')
+    } catch (err) {
+      toast.error(errorMessage(err, 'Failed to remove the logo'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-4 mb-4 p-3 rounded-xl bg-[#f8faff] border border-border">
+      <div className="w-20 h-20 rounded-xl bg-white border border-border flex items-center justify-center overflow-hidden flex-shrink-0">
+        {logoUrl
+          ? <img src={logoUrl} alt={`${settings?.schoolName || 'School'} logo`} className="max-w-full max-h-full object-contain" />
+          : <Building2 className="w-8 h-8 text-gray-300" />}
+      </div>
+      <div className="flex-1 min-w-[180px]">
+        <div className="text-sm font-semibold text-gray-800">School logo</div>
+        <div className="text-xs text-gray-400 mt-0.5">
+          Shown on printed reports and in the app. PNG, JPEG, WebP or SVG; a square logo looks best.
+        </div>
+        <div className="flex gap-2 mt-2">
+          <input ref={fileRef} type="file" accept={LOGO_ACCEPT} className="hidden" onChange={choose} />
+          <Button size="sm" variant="primary" onClick={() => fileRef.current?.click()} disabled={busy}>
+            <ImagePlus className="w-3.5 h-3.5" />
+            {busy ? 'Saving…' : logoUrl ? 'Change logo' : 'Upload logo'}
+          </Button>
+          {logoUrl && (
+            <Button size="sm" variant="danger" onClick={remove} disabled={busy}>
+              <Trash2 className="w-3.5 h-3.5" /> Remove
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
 import toast from 'react-hot-toast'
 
 export default function SettingsPage() {
@@ -106,6 +173,7 @@ export default function SettingsPage() {
             {savingSchool ? 'Saving…' : 'Save'}
           </Button>
         </SectionHeader>
+        <LogoEditor />
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4">
           {schoolFields.map(([key, label, placeholder]) => (
             <Field key={key} label={label}>

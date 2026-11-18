@@ -3,12 +3,13 @@
 import './env.js'
 import { migrate } from '../../shared/migrate.js'
 import { closePool } from '../../shared/db.js'
+import { log } from '../../shared/log.js'
 
 try {
-  await migrate()
-  console.log('[DB] Migrations up to date.')
+  await migrate({ log: (m) => log.info(m) })
+  log.info('migrations up to date')
 } catch (err) {
-  console.error('[DB] ❌', err.message)
+  log.error('migration failed', { err })
   process.exitCode = 1
 } finally {
   await closePool()

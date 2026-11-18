@@ -32,8 +32,14 @@ api.interceptors.response.use(
   }
 )
 
-/** The server's error message, or a fallback. */
-export const errorMessage = (err, fallback = 'Something went wrong.') =>
-  err?.response?.data?.message || fallback
+/**
+ * The server's error message, or a fallback. For server errors it adds a short reference
+ * (start of the request id) that support can look up in the server logs.
+ */
+export const errorMessage = (err, fallback = 'Something went wrong.') => {
+  const data = err?.response?.data
+  const msg = data?.message || (err?.response ? fallback : 'Cannot reach the server. Check your connection.')
+  return data?.requestId ? `${msg} (ref ${String(data.requestId).slice(0, 8)})` : msg
+}
 
 export default api

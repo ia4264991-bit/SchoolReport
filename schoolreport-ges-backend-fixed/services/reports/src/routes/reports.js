@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { query, withTransaction } from '../../../../shared/db.js'
-import { ah, HttpError, isUuid, idParam, termParam, str } from '../../../../shared/http.js'
+import { ah, HttpError, idParam, termParam, str } from '../../../../shared/http.js'
+import { audit } from '../../../../shared/audit.js'
 import { requireAuth, requireRole, requireSchool, assertClassAccess } from '../middleware/auth.js'
 import { ensureSettings } from '../../../school/src/models/index.js'
 import { scoreToApi, weightedTotal } from '../models/Score.js'
@@ -132,6 +133,34 @@ scoresRouter.post('/:classId/:term/bulk', ah(async (req, res) => {
   }
 
   await withTransaction(async (db) => {
+    // Current values, to record which existing marks this save changes or clears.
+    const touched = [...new Set([...upserts.student, ...clears.student])]
+    const { rows: existingRows } = touched.length
+      ? await db.query(
+          `SELECT student_id, subject_id, class_score, exam_score FROM scores
+            WHERE school_id = $1 AND academic_year = $2 AND term = $3 AND student_id = ANY($4::uuid[])
+            FOR UPDATE`,
+          [sid(req), academicYear, term, touched])
+      : { rows: [] }
+    const existing = new Map(existingRows.map((r) => [`${r.student_id}|${r.subject_id}`, r]))
+    const label = (st, su) => `${students.get(st)} — ${subjects.get(su).name}`
+    const modified = []
+    let added = 0
+    upserts.student.forEach((st, i) => {
+      const su = upserts.subject[i]
+      const old = existing.get(`${st}|${su}`)
+      if (!old) { added++; return }
+      if (old.class_score !== upserts.cs[i] || old.exam_score !== upserts.es[i]) {
+        modified.push({ studentId: st, subjectId: su, what: label(st, su),
+          classScore: [old.class_score, upserts.cs[i]], examScore: [old.exam_score, upserts.es[i]] })
+      }
+    })
+    const removed = clears.student
+      .map((st, i) => ({ st, su: clears.subject[i], old: existing.get(`${st}|${clears.subject[i]}`) }))
+      .filter((c) => c.old)
+      .map((c) => ({ studentId: c.st, subjectId: c.su, what: label(c.st, c.su),
+        classScore: c.old.class_score, examScore: c.old.exam_score }))
+
     if (upserts.student.length) {
       await db.query(
         `INSERT INTO scores (school_id, class_id, academic_year, term, student_id, subject_id, class_score, exam_score)
@@ -153,6 +182,12 @@ scoresRouter.post('/:classId/:term/bulk', ah(async (req, res) => {
             AND sc.student_id = c.student_id AND sc.subject_id = c.subject_id`,
         [sid(req), academicYear, term, clears.student, clears.subject]
       )
+    }
+    if (added || modified.length || removed.length) {
+      await audit(req, 'scores.save', {
+        db, targetType: 'class', targetId: cls.id,
+        details: { class: cls.name, academicYear, term, added, modified, removed },
+      })
     }
   })
 
@@ -189,6 +224,13 @@ scoresRouter.put('/:id', ah(async (req, res) => {
     'UPDATE scores SET class_score = $2, exam_score = $3 WHERE id = $1 RETURNING *',
     [id, cs, es]
   )
+  if (cs !== score.class_score || es !== score.exam_score) {
+    await audit(req, 'score.update', {
+      targetType: 'score', targetId: id,
+      details: { studentId: score.student_id, subject: score.subject_name, academicYear: score.academic_year,
+        term: score.term, classScore: [score.class_score, cs], examScore: [score.exam_score, es] },
+    })
+  }
   res.json(scoreToApi(updated.rows[0]))
 }))
 
@@ -196,10 +238,15 @@ scoresRouter.put('/:id', ah(async (req, res) => {
 scoresRouter.delete('/:classId/:term', requireRole('admin'), ah(async (req, res) => {
   const cls = await assertClassAccess(req, req.params.classId)
   const term = termParam(req.params.term)
+  const academicYear = await academicYearFor(req, { allowQuery: false })
   const result = await query(
     'DELETE FROM scores WHERE school_id = $1 AND class_id = $2 AND academic_year = $3 AND term = $4',
-    [sid(req), cls.id, await academicYearFor(req, { allowQuery: false }), term]
+    [sid(req), cls.id, academicYear, term]
   )
+  await audit(req, 'scores.clear_class', {
+    targetType: 'class', targetId: cls.id,
+    details: { class: cls.name, academicYear, term, deleted: result.rowCount },
+  })
   res.json({ message: `${result.rowCount} scores deleted.` })
 }))
 

@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { query } from '../../../../shared/db.js'
 import { ah, HttpError, isEmail, isUuid, str, requiredStr, idParam } from '../../../../shared/http.js'
+import { audit, changes } from '../../../../shared/audit.js'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { USER_COLUMNS, SCHOOL_ROLES, hashPassword, makeUsername, userToApi } from '../models/User.js'
 import { sendWelcomeEmail, sendAdminResetEmail } from '../utils/mailer.js'
@@ -73,6 +74,7 @@ router.post('/', requireAuth, requireRole('admin'), ah(async (req, res) => {
     if (err.code === '23505') throw new HttpError(409, 'A user with this email already exists.')
     throw err
   }
+  await audit(req, 'user.create', { targetType: 'user', targetId: user.id, details: { email, role, classId } })
 
   sendWelcomeEmail({
     to: email, fullName, email, tempPassword, role,
@@ -120,6 +122,10 @@ router.put('/:id', requireAuth, requireRole('admin'), ah(async (req, res) => {
         RETURNING ${USER_COLUMNS}`,
       [target.id, req.user.schoolId, ...Object.values(fields)]
     )
+    const diff = changes(target, fields)
+    if (Object.keys(diff).length) {
+      await audit(req, 'user.update', { targetType: 'user', targetId: target.id, details: diff })
+    }
     res.json(userToApi(rows[0]))
   } catch (err) {
     if (err.code === '23505') throw new HttpError(409, 'Another user already has this email.')
@@ -132,6 +138,7 @@ router.delete('/:id', requireAuth, requireRole('admin'), ah(async (req, res) => 
   const target = await findSchoolUser(req)
   if (target.id === req.user.id) throw new HttpError(400, 'You cannot deactivate your own account.')
   await query('UPDATE users SET is_active = false WHERE id = $1', [target.id])
+  await audit(req, 'user.deactivate', { targetType: 'user', targetId: target.id, details: { email: target.email } })
   res.json({ message: 'User deactivated.' })
 }))
 
@@ -139,12 +146,14 @@ router.delete('/:id', requireAuth, requireRole('admin'), ah(async (req, res) => 
 router.post('/:id/reset-password', requireAuth, requireRole('admin'), ah(async (req, res) => {
   const target = await findSchoolUser(req)
   const newPassword = generateTempPassword()
+  // token_version + 1 signs the user out of every session.
   await query(
-    `UPDATE users SET password_hash = $2, must_change_password = true,
+    `UPDATE users SET password_hash = $2, must_change_password = true, token_version = token_version + 1,
             otp_hash = NULL, otp_expires_at = NULL, otp_attempts = 0
       WHERE id = $1`,
     [target.id, await hashPassword(newPassword)]
   )
+  await audit(req, 'user.reset_password', { targetType: 'user', targetId: target.id, details: { email: target.email } })
 
   sendAdminResetEmail({
     to: target.email, fullName: target.full_name,

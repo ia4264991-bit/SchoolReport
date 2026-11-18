@@ -36,6 +36,12 @@ export const useAuthStore = create((set, get) => ({
     set({ user: null, token: null })
   },
 
+  /** Changing the password signs out old tokens; the server hands back a fresh one. */
+  setToken: (token) => {
+    localStorage.setItem('ges_token', token)
+    set({ token })
+  },
+
   updateUser: (updates) => {
     const user = { ...get().user, ...updates }
     localStorage.setItem('ges_user', JSON.stringify(user))

@@ -138,19 +138,34 @@ dashboard.
 | PUT | `/scores/:id` · DELETE `/scores/:classId/:term` (admin) | staff |
 | GET | `/reports/class/:classId/:term` · `/reports/student/:studentId/:term` | staff |
 | GET | `/reports/school/:schoolId/analytics` | admin, head, superadmin |
-| GET | `/health` | anyone (also checks the database) |
+| GET | `/school/logo` | school users · PUT (raw PNG/JPEG/WebP ≤ 512 KB) and DELETE: admin, head |
+| GET | `/audit?limit=&before=&action=&targetType=&targetId=` | admin (own school), superadmin (all) |
+| GET | `/health` (database check) · `/health/live` (process only) | anyone |
 
 Score reads use the school's current academic year; add `?academicYear=2025/2026` for another year.
 
 ---
 
+## 🛡️ Production behaviour
+
+- **Audit log** (`audit_log` table, `GET /api/audit`): who changed what and when — users, settings,
+  classes, subjects, students, every changed or cleared mark (old → new), logo, password changes.
+- **Sessions**: changing or resetting a password signs out every other session at once.
+- **Logs**: one JSON line per request with a request id (`X-Request-Id`); server errors return a
+  short reference the user can quote. Passwords, tokens and reset codes are never logged.
+- **Refuses to start** in production with unsafe settings (short `JWT_SECRET`, no `CORS_ORIGINS`,
+  database without TLS).
+- Security headers (helmet), per-IP rate limits, `Cache-Control: no-store` on personal data,
+  optional CloudFront origin check (`ORIGIN_VERIFY_SECRET`).
+- **Docker image**: `Dockerfile` (Node 24, non-root, health check, RDS CA bundle in `certs/`).
+
 ## ☁️ Deploying
 
-- **Backend** (Render/Railway): root directory `schoolreport-ges-backend-fixed`, build `npm install`,
-  start `npm start`. Set `DATABASE_URL`, `JWT_SECRET`, `SUPERADMIN_EMAIL`, `SUPERADMIN_PASSWORD`,
-  `NODE_ENV=production`, `FRONTEND_URL`, `CORS_ORIGINS`, and the `SMTP_*` values.
-- **Frontend** (Vercel): root directory `schoolreport-ges-v3`; set `VITE_API_URL` to the backend's
-  address ending in `/api`.
+- **Backend** (AWS: EC2 + RDS PostgreSQL + CloudFront): see [`../infra/README.md`](../infra/README.md).
+- **Frontend** (Vercel): root directory `schoolreport-ges-v3`; set `VITE_API_URL` to the API address
+  ending in `/api`.
+- **CI**: `.github/workflows/ci.yml` runs the API tests against PostgreSQL and builds the frontend on
+  every push and pull request.
 
 ---
 

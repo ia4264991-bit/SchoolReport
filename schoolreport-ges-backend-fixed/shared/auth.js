@@ -4,8 +4,12 @@ import { ah, HttpError, isUuid } from './http.js'
 
 export const JWT_ALGORITHM = 'HS256'
 
-export function signToken(userId) {
-  return jwt.sign({ id: userId }, process.env.JWT_SECRET, {
+/**
+ * `v` is the user's token_version: changing or resetting the password bumps it in the
+ * database, so every token issued before that stops working.
+ */
+export function signToken(userId, tokenVersion) {
+  return jwt.sign({ id: userId, v: tokenVersion }, process.env.JWT_SECRET, {
     algorithm: JWT_ALGORITHM,
     expiresIn: process.env.JWT_EXPIRES_IN || '7d',
   })
@@ -37,7 +41,7 @@ function authenticate({ allowPendingPasswordChange }) {
     if (!isUuid(payload?.id)) return res.status(401).json({ message: 'Invalid token.' })
 
     const { rows } = await query(
-      `SELECT u.id, u.email, u.role, u.school_id, u.class_id, u.full_name,
+      `SELECT u.id, u.email, u.role, u.school_id, u.class_id, u.full_name, u.token_version,
               u.is_active, u.must_change_password, s.is_active AS school_active
          FROM users u
          LEFT JOIN schools s ON s.id = u.school_id
@@ -47,6 +51,9 @@ function authenticate({ allowPendingPasswordChange }) {
     const u = rows[0]
     if (!u || !u.is_active) {
       return res.status(401).json({ message: 'Your account is no longer active.' })
+    }
+    if (payload.v !== u.token_version) {
+      return res.status(401).json({ message: 'Your password was changed. Please log in again.' })
     }
     if (u.school_id && !u.school_active) {
       return res.status(401).json({ message: "Your school's account has been deactivated." })
@@ -63,6 +70,7 @@ function authenticate({ allowPendingPasswordChange }) {
       classId: u.class_id,
       fullName: u.full_name,
       mustChangePassword: u.must_change_password,
+      tokenVersion: u.token_version,
     }
     next()
   })

@@ -1,0 +1,12 @@
+# Keep the image small and free of secrets and local state.
+node_modules
+**/node_modules
+.env
+.env.*
+!.env.example
+test
+*.log
+.git
+Dockerfile
+.dockerignore
+README.md

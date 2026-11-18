@@ -106,7 +106,7 @@ function SidebarContent({ user, settings, location, onNavigate, onLogout }) {
 
 export default function AppLayout() {
   const { user, logout, refreshUser } = useAuthStore()
-  const { settings, fetchSettings } = useSchoolStore()
+  const { settings, fetchSettings, logoUrl, reset: resetSchool } = useSchoolStore()
   const navigate = useNavigate()
   const location = useLocation()
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -119,7 +119,8 @@ export default function AppLayout() {
 
   useEffect(() => { setDrawerOpen(false) }, [location.pathname])
 
-  const handleLogout = () => { logout(); navigate('/login') }
+  // Clear the school's data too, so the next person on this computer never sees it.
+  const handleLogout = () => { logout(); resetSchool(); navigate('/login') }
   const handleNav = (path) => { navigate(path); setDrawerOpen(false) }
 
   return (
@@ -137,9 +138,14 @@ export default function AppLayout() {
               <Menu className="w-5 h-5" />
             </button>
             <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 bg-blue rounded-lg flex items-center justify-center">
-                <Shield className="w-4 h-4 text-white" />
-              </div>
+              {logoUrl && user?.role !== 'superadmin' ? (
+                <img src={logoUrl} alt={`${settings?.schoolName || 'School'} logo`}
+                  className="w-9 h-9 rounded-lg object-contain bg-white border border-border p-0.5" />
+              ) : (
+                <div className="w-8 h-8 bg-blue rounded-lg flex items-center justify-center">
+                  <Shield className="w-4 h-4 text-white" />
+                </div>
+              )}
               <div>
                 <div className="font-bold text-[15px] text-blue leading-tight">SchoolReport GES</div>
                 <div className="text-[10px] text-gray-400 hidden sm:block">

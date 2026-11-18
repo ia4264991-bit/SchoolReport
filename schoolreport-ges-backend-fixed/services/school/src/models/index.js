@@ -34,6 +34,8 @@ export const settingsToApi = (r) => ({
   academicYear: r.academic_year,
   term: r.term,
   nextTermDate: r.next_term_date || '',
+  // Fingerprint of the current logo (null = none); the app loads /school/logo?v=<this>.
+  logoVersion: r.logo_version ?? null,
   updatedAt: r.updated_at,
 })
 

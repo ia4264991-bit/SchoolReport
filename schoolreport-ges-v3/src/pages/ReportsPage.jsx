@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSchoolStore } from '@/store/schoolStore'
 import { useAuthStore } from '@/store/authStore'
 import api, { errorMessage } from '@/lib/api'
+import { formatDate } from '@/lib/format'
 import { Card, SectionHeader, Button, Select, Table, Tr, Td, Badge, Spinner, EmptyState } from '@/components/ui'
 import { FileText, Printer, ChevronRight } from 'lucide-react'
 import toast from 'react-hot-toast'
@@ -34,7 +35,7 @@ function ordinal(n) {
 
 export default function ReportsPage() {
   const { user } = useAuthStore()
-  const { classes, subjects, fetchClasses, fetchSubjects, settings } = useSchoolStore()
+  const { classes, subjects, fetchClasses, fetchSubjects, settings, logoUrl } = useSchoolStore()
   const isTeacher = user?.role === 'teacher'
   const [pickedClass, setPickedClass] = useState('')
   const selectedClass = isTeacher ? (user?.classId || '') : pickedClass
@@ -189,7 +190,13 @@ export default function ReportsPage() {
             boxShadow: '0 2px 12px rgba(0,0,0,0.08)'
           }}>
             {/* Header */}
-            <div style={{ textAlign: 'center', borderBottom: '2.5px solid #222', paddingBottom: '10px', marginBottom: '14px' }}>
+            <div style={{ textAlign: 'center', borderBottom: '2.5px solid #222', paddingBottom: '10px', marginBottom: '14px', position: 'relative', minHeight: logoUrl ? '84px' : undefined,
+              // keep a long school name clear of the logo
+              paddingLeft: logoUrl ? '88px' : undefined, paddingRight: logoUrl ? '88px' : undefined }}>
+              {logoUrl && (
+                <img src={logoUrl} alt="School logo"
+                  style={{ position: 'absolute', left: 0, top: 0, width: '80px', height: '80px', objectFit: 'contain' }} />
+              )}
               <div style={{ fontSize: '10px', letterSpacing: '1.5px', color: '#444', marginBottom: '3px' }}>GHANA EDUCATION SERVICE</div>
               <h1 style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '2px' }}>
                 {settings?.schoolName || 'SCHOOL NAME'}
@@ -211,7 +218,7 @@ export default function ReportsPage() {
                 [`Academic Year: ${settings?.academicYear || ''}`, `Term: Term ${term}`],
                 [`Position: ${position} out of ${students.length}`, `Total Students: ${students.length}`],
                 [
-                  `Next Term Begins: ${settings?.nextTermDate ? new Date(`${settings.nextTermDate}T00:00:00`).toLocaleDateString() : '—'}`,
+                  `Next Term Begins: ${settings?.nextTermDate ? formatDate(settings.nextTermDate) : '—'}`,
                   `Head Teacher: ${settings?.headTeacher || ''}`,
                 ],
               ].flat().map((t, i) => (

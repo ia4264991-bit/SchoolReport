@@ -15,7 +15,7 @@ const quickLinks = [
 
 export default function DashboardPage() {
   const { user } = useAuthStore()
-  const { settings } = useSchoolStore()
+  const { settings, logoUrl } = useSchoolStore()
   const navigate = useNavigate()
   const [stats, setStats] = useState(null)
 
@@ -84,7 +84,13 @@ export default function DashboardPage() {
 
         {/* School Info */}
         <Card>
-          <CardTitle>School Information</CardTitle>
+          <div className="flex items-center gap-3 mb-3">
+            {logoUrl && (
+              <img src={logoUrl} alt="School logo"
+                className="w-12 h-12 rounded-lg object-contain bg-white border border-border p-0.5 flex-shrink-0" />
+            )}
+            <div className="font-bold text-sm text-gray-900">School Information</div>
+          </div>
           <div className="space-y-0">
             {[
               ['School',        settings?.schoolName  || '—'],

@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useAuthStore } from '@/store/authStore'
 import { useSchoolStore } from '@/store/schoolStore'
 import api, { errorMessage } from '@/lib/api'
+import { formatDate } from '@/lib/format'
 import { Card, SectionHeader, Button, Table, Tr, Td, Badge, Modal, Field, Input, Select, Spinner, EmptyState, Avatar, PageHeader } from '@/components/ui'
 import { UserPlus, Users, Trash2, Pencil } from 'lucide-react'
 import toast from 'react-hot-toast'
@@ -139,8 +140,7 @@ export default function StudentsPage() {
                   </Badge>
                 </Td>
                 <Td className="text-gray-400 text-xs hidden sm:table-cell">
-                  {/* dateOfBirth is 'YYYY-MM-DD'; read it as a local date so the day doesn't shift */}
-                  {s.dateOfBirth ? new Date(`${s.dateOfBirth}T00:00:00`).toLocaleDateString() : '—'}
+                  {s.dateOfBirth ? formatDate(s.dateOfBirth) : '—'}
                 </Td>
                 <Td>
                   <div className="flex gap-1.5 justify-end">

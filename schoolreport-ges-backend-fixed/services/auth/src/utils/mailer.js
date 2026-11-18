@@ -1,53 +1,58 @@
 import nodemailer from 'nodemailer'
+import { log } from '../../../../shared/log.js'
 
-/** True when SMTP credentials are set, i.e. emails can actually be sent. */
+/*
+ * SMTP settings (Amazon SES example):
+ *   SMTP_HOST=email-smtp.eu-north-1.amazonaws.com  SMTP_PORT=587
+ *   SMTP_USER / SMTP_PASS = SES SMTP credentials
+ *   EMAIL_FROM="SchoolReport GES" <no-reply@your-domain>   (a verified SES identity)
+ * Port 587 upgrades to TLS (STARTTLS, required); SMTP_SECURE=true for port 465.
+ */
+
+/** True when SMTP is fully set up, i.e. emails can actually be sent. */
 export function emailConfigured() {
-  return Boolean(process.env.SMTP_USER && process.env.SMTP_PASS)
+  return Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS && process.env.EMAIL_FROM)
 }
 
 // Names and school names are typed by users; escape them before putting them in HTML.
 const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ESC[c])
 
-// ─── Create transporter — reads env vars at call time ─────────────
-function makeTransporter() {
-  return nodemailer.createTransport({
-    host:   process.env.SMTP_HOST || 'smtp-relay.brevo.com',
-    port:   parseInt(process.env.SMTP_PORT || '587'),
-    secure: false,
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
-    connectionTimeout: 10000,
-    socketTimeout:     15000,
-  })
+// Logs show "a***@school.edu.gh", not the full address.
+const maskEmail = (e) => String(e).replace(/^(.)[^@]*(@.*)$/, '$1***$2')
+
+let transporter
+function getTransporter() {
+  if (!transporter) {
+    const secure = process.env.SMTP_SECURE === 'true'
+    transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: parseInt(process.env.SMTP_PORT || (secure ? '465' : '587'), 10),
+      secure,
+      requireTLS: !secure, // never send passwords or reset codes over an unencrypted link
+      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+      pool: true,
+      maxConnections: 2,
+      connectionTimeout: 10_000,
+      socketTimeout: 15_000,
+    })
+  }
+  return transporter
 }
 
-// ─── Core send — NO verify() call, just send directly ────────────
-async function _send({ to, subject, html }) {
-  const from = process.env.EMAIL_FROM
-    || '"SchoolReport GES" <noviqsystem486@gmail.com>'
-
-  console.log(`[Mailer] → "${subject}" to ${to}`)
-
-  const transporter = makeTransporter()
-  const info = await transporter.sendMail({ from, to, subject, html })
-
-  console.log(`[Mailer] ✅ Sent! id=${info.messageId} accepted=${JSON.stringify(info.accepted)}`)
-  return info
-}
-
-// ─── Fire and forget — sends in background, never blocks caller ───
-// Returns immediately. Logs success/failure to console only.
-function _sendBackground(args) {
+/**
+ * Sends in the background so a slow mail server never delays the HTTP response.
+ * `kind` is what gets logged — never the subject (the reset email's subject holds the code).
+ */
+function _sendBackground({ kind, to, subject, html }) {
   if (!emailConfigured()) {
-    console.warn(`[Mailer] SMTP_USER/SMTP_PASS not set — skipped "${args.subject}" to ${args.to}`)
+    log.warn('email not sent: SMTP is not configured', { kind, to: maskEmail(to) })
     return
   }
-  _send(args)
-    .then(() => console.log(`[Mailer] ✉  Background send OK → ${args.to}`))
-    .catch(err => console.error(`[Mailer] ✗ Background send FAILED → ${args.to} :`, err.message))
+  getTransporter()
+    .sendMail({ from: process.env.EMAIL_FROM, to, subject, html })
+    .then((info) => log.info('email sent', { kind, to: maskEmail(to), messageId: info.messageId }))
+    .catch((err) => log.error('email failed', { kind, to: maskEmail(to), error: err.message, code: err.code }))
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -61,6 +66,7 @@ export function sendWelcomeEmail({ to, fullName, email, tempPassword, role, scho
   const schoolName = esc(rawSchoolName)
 
   _sendBackground({
+    kind: 'welcome',
     to,
     subject,
     html: `
@@ -125,6 +131,7 @@ export function sendWelcomeEmail({ to, fullName, email, tempPassword, role, scho
 export function sendOTPEmail({ to, fullName, otp }) {
   fullName = esc(fullName)
   _sendBackground({
+    kind: 'reset_code',
     to,
     subject: `${otp} — Your SchoolReport GES Reset Code`,
     html: `
@@ -167,6 +174,7 @@ export function sendAdminResetEmail({ to, fullName, newPassword, schoolName: raw
   const schoolName = esc(rawSchoolName)
 
   _sendBackground({
+    kind: 'admin_reset',
     to,
     subject,
     html: `

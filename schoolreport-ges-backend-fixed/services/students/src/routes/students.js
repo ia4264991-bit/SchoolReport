@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { query, withTransaction } from '../../../../shared/db.js'
 import { ah, HttpError, isUuid, requiredStr, idParam, dateOrNull } from '../../../../shared/http.js'
+import { audit, changes } from '../../../../shared/audit.js'
 import { requireAuth, requireRole, requireSchool, assertClassAccess } from '../middleware/auth.js'
 import { GENDERS, studentToApi } from '../models/Student.js'
 
@@ -85,6 +86,7 @@ router.post('/', requireRole('admin', 'head', 'teacher'), ah(async (req, res) =>
      VALUES ($1, $2, $3, $4, $5) RETURNING *`,
     [sid(req), f.class_id, f.full_name, f.gender, f.date_of_birth]
   )
+  await audit(req, 'student.create', { targetType: 'student', targetId: rows[0].id, details: { name: f.full_name, classId: f.class_id } })
   res.status(201).json(studentToApi(rows[0]))
 }))
 
@@ -114,6 +116,7 @@ router.post('/bulk', requireRole('admin', 'head'), ah(async (req, res) => {
       )
       out.push(studentToApi(rows[0]))
     }
+    await audit(req, 'student.bulk_create', { db, details: { count: out.length } })
     return out
   })
   res.status(201).json(created)
@@ -131,6 +134,8 @@ router.put('/:id', requireRole('admin', 'head', 'teacher'), ah(async (req, res) 
       WHERE id = $1 AND school_id = $2 RETURNING *`,
     [student.id, sid(req), ...Object.values(fields)]
   )
+  const diff = changes(student, fields)
+  if (Object.keys(diff).length) await audit(req, 'student.update', { targetType: 'student', targetId: student.id, details: diff })
   res.json(studentToApi(rows[0]))
 }))
 
@@ -138,6 +143,7 @@ router.put('/:id', requireRole('admin', 'head', 'teacher'), ah(async (req, res) 
 router.delete('/:id', requireRole('admin', 'head'), ah(async (req, res) => {
   const student = await findStudent(req)
   await query('UPDATE students SET is_active = false WHERE id = $1', [student.id])
+  await audit(req, 'student.remove', { targetType: 'student', targetId: student.id, details: { name: student.full_name } })
   res.json({ message: 'Student removed.' })
 }))
 

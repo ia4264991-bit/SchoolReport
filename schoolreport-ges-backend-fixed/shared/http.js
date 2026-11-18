@@ -1,6 +1,7 @@
 /**
  * Small HTTP helpers shared by every module.
  */
+import { log } from './log.js'
 
 /** Wraps an async route so a thrown error reaches the error handler (Express 4 does not do this itself). */
 export const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next)
@@ -85,6 +86,7 @@ export function errorHandler(err, req, res, next) {
     case '22008': // date out of range
       return res.status(400).json({ message: 'One or more values are invalid.' })
   }
-  console.error(`[Server] ${req.method} ${req.originalUrl}:`, err)
-  res.status(500).json({ message: 'Server error. Please try again.' })
+  log.error('unhandled error', { reqId: req.id, method: req.method, path: req.originalUrl.split('?')[0], err })
+  // The id lets support find this exact error in the logs.
+  res.status(500).json({ message: 'Server error. Please try again.', requestId: req.id })
 }

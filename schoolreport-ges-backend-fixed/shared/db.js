@@ -1,4 +1,6 @@
+import { readFileSync } from 'node:fs'
 import pg from 'pg'
+import { log } from './log.js'
 
 const { Pool, types } = pg
 
@@ -12,23 +14,35 @@ types.setTypeParser(1082, (v) => v)
 
 let pool
 
+/** True when database connection settings are present. */
+export const databaseConfigured = () => Boolean(process.env.DATABASE_URL || process.env.PGHOST)
+
 /**
- * One shared connection pool for the whole server.
- * DATABASE_URL example: postgres://user:pass@host:5432/schoolreport
- * Hosted databases usually need TLS: add ?sslmode=require (certificate checked),
- * or ?sslmode=no-verify only if the provider uses a private certificate authority.
+ * One shared connection pool for the whole server. Connection settings, either:
+ *  - DATABASE_URL=postgres://user:pass@host:5432/schoolreport, or
+ *  - the standard PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE variables (production:
+ *    no URL-encoding problems with generated passwords).
+ * TLS: DATABASE_SSL_CA=<path to CA bundle> turns on TLS with full certificate checking
+ * (production on Amazon RDS: the RDS bundle shipped in certs/). Locally, leave it unset.
  */
 export function getPool() {
   if (!pool) {
-    if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is not set.')
-    pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
+    if (!databaseConfigured()) throw new Error('Set DATABASE_URL or PGHOST/PGUSER/PGPASSWORD/PGDATABASE.')
+    const config = {
       max: parseInt(process.env.PG_POOL_MAX || '10', 10),
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 10_000,
-    })
+      // Kill runaway queries instead of letting them hold a connection.
+      statement_timeout: parseInt(process.env.PG_STATEMENT_TIMEOUT_MS || '15000', 10),
+      application_name: 'schoolreport-api',
+    }
+    if (process.env.DATABASE_URL) config.connectionString = process.env.DATABASE_URL
+    if (process.env.DATABASE_SSL_CA) {
+      config.ssl = { ca: readFileSync(process.env.DATABASE_SSL_CA, 'utf8'), rejectUnauthorized: true }
+    }
+    pool = new Pool(config)
     // An idle client can lose its connection (DB restart, network). Log it instead of crashing.
-    pool.on('error', (err) => console.error('[DB] Idle client error:', err.message))
+    pool.on('error', (err) => log.error('database idle client error', { err }))
   }
   return pool
 }

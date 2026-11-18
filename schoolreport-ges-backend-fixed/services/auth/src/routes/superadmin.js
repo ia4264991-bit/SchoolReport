@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { query, withTransaction } from '../../../../shared/db.js'
 import { ah, HttpError, isEmail, str, requiredStr, idParam } from '../../../../shared/http.js'
+import { audit } from '../../../../shared/audit.js'
 import { schoolToApi, currentAcademicYear } from '../../../school/src/models/index.js'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { USER_COLUMNS, hashPassword, makeUsername, userToApi } from '../models/User.js'
@@ -53,6 +54,10 @@ router.post('/schools', ah(async (req, res) => {
          RETURNING ${USER_COLUMNS}`,
         [adminName, adminEmail, makeUsername(adminEmail), passwordHash, s.rows[0].id]
       )
+      await audit(req, 'school.create', {
+        db, schoolId: s.rows[0].id, targetType: 'school', targetId: s.rows[0].id,
+        details: { name: schoolName, email: schoolEmail, adminEmail },
+      })
       return { school: s.rows[0], admin: u.rows[0] }
     }))
   } catch (err) {
@@ -98,6 +103,9 @@ router.put('/schools/:id/toggle', ah(async (req, res) => {
     [id]
   )
   if (!rows[0]) throw new HttpError(404, 'School not found.')
+  await audit(req, rows[0].is_active ? 'school.activate' : 'school.deactivate', {
+    schoolId: id, targetType: 'school', targetId: id, details: { name: rows[0].name },
+  })
   res.json({
     message: `School ${rows[0].is_active ? 'activated' : 'deactivated'}.`,
     school: schoolToApi(rows[0]),

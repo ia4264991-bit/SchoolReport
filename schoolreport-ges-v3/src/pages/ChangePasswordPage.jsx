@@ -6,7 +6,7 @@ import { Shield, Eye, EyeOff, Lock } from 'lucide-react'
 import toast from 'react-hot-toast'
 
 export default function ChangePasswordPage() {
-  const { user, updateUser, logout } = useAuthStore()
+  const { user, updateUser, setToken, logout } = useAuthStore()
   const navigate = useNavigate()
   const [form, setForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' })
   const [showPw, setShowPw] = useState(false)
@@ -22,10 +22,12 @@ export default function ChangePasswordPage() {
 
     setLoading(true)
     try {
-      await api.post('/auth/change-password', {
+      const { data } = await api.post('/auth/change-password', {
         currentPassword: form.currentPassword,
         newPassword: form.newPassword,
       })
+      // The change signs out every other session, this one included; keep going with the new token.
+      setToken(data.token)
       updateUser({ mustChangePassword: false })
       toast.success('Password changed successfully!')
       navigate(homePath(user))

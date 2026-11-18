@@ -5,6 +5,26 @@
 // The database is WIPED on every run, so its name must end in "_test".
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
+import zlib from 'node:zlib'
+
+/** A real (valid) RGBA PNG of the given size, built in memory. */
+function makePng(width, height) {
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length)
+    const body = Buffer.concat([Buffer.from(type, 'latin1'), data])
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(zlib.crc32(body))
+    return Buffer.concat([len, body, crc])
+  }
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4)
+  ihdr[8] = 8; ihdr[9] = 6 // 8-bit RGBA
+  const raw = Buffer.alloc(height * (1 + width * 4), 0x80)
+  for (let y = 0; y < height; y++) raw[y * (1 + width * 4)] = 0 // filter byte per row
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0)),
+  ])
+}
 
 const TEST_URL = process.env.TEST_DATABASE_URL
 if (!TEST_URL) throw new Error('Set TEST_DATABASE_URL to a throwaway database (its name must end in _test).')
@@ -17,6 +37,7 @@ Object.assign(process.env, {
   JWT_SECRET: `test-secret-${'x'.repeat(40)}`,
   NODE_ENV: 'test',
   AUTH_RATE_LIMIT_MAX: '1000',
+  API_RATE_LIMIT_MAX: '100000',
   SUPERADMIN_EMAIL: 'root@test.local',
   SUPERADMIN_PASSWORD: 'RootPass#12345',
 })
@@ -30,27 +51,32 @@ const { migrate } = await import('../shared/migrate.js')
 const { seedSuperadmin } = await import('../gateway/src/seed.js')
 const { createApp } = await import('../gateway/src/app.js')
 const { hashOtp } = await import('../services/auth/src/models/User.js')
+const { sniffImage } = await import('../shared/image.js')
 
 let server, base
 
-async function api(method, path, { token, body } = {}) {
-  const res = await fetch(base + path, {
+async function api(method, path, { token, body, headers = {}, url = base } = {}) {
+  const res = await fetch(url + path, {
     method,
     headers: {
       'content-type': 'application/json',
       ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...headers,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   const text = await res.text()
   let data
   try { data = JSON.parse(text) } catch { data = text }
-  return { status: res.status, data }
+  return { status: res.status, data, headers: res.headers }
 }
 
 const NEW_PW = 'NewPassw0rd!'
 
-/** Logs in with a temporary password, checks the forced change, returns a usable token. */
+/**
+ * Logs in with a temporary password, checks the forced change, and returns the fresh
+ * token the change hands back (the login token stops working once the password changes).
+ */
 async function firstLogin(email, tempPassword) {
   const r = await api('POST', '/api/auth/login', { body: { email, password: tempPassword } })
   assert.equal(r.status, 200, JSON.stringify(r.data))
@@ -62,7 +88,9 @@ async function firstLogin(email, tempPassword) {
     token, body: { currentPassword: tempPassword, newPassword: NEW_PW },
   })
   assert.equal(ch.status, 200, JSON.stringify(ch.data))
-  return token
+  assert.ok(ch.data.token, 'change-password returns a new token')
+  assert.equal((await api('GET', '/api/auth/me', { token })).status, 401, 'the old token is signed out')
+  return ch.data.token
 }
 
 before(async () => {
@@ -82,10 +110,32 @@ after(async () => {
 // Shared state, filled in by the tests in order (node:test runs them sequentially).
 const s = {}
 
-test('health check reaches the database', async () => {
+test('health check reaches the database; security headers are set', async () => {
   const r = await api('GET', '/api/health')
   assert.equal(r.status, 200)
   assert.equal(r.data.database, 'postgresql')
+  assert.equal((await api('GET', '/api/health/live')).status, 200)
+  assert.equal(r.headers.get('x-content-type-options'), 'nosniff')
+  assert.equal(r.headers.get('cache-control'), 'no-store')
+  assert.match(r.headers.get('content-security-policy'), /default-src 'none'/)
+  assert.match(r.headers.get('x-request-id'), /^[0-9a-f-]{36}$/)
+  assert.equal(r.headers.get('x-powered-by'), null)
+})
+
+test('with ORIGIN_VERIFY_SECRET set, only requests carrying it are served', async () => {
+  process.env.ORIGIN_VERIFY_SECRET = 'cloudfront-only-secret'
+  const guarded = createApp().listen(0)
+  delete process.env.ORIGIN_VERIFY_SECRET
+  await new Promise((r) => guarded.once('listening', r))
+  const url = `http://127.0.0.1:${guarded.address().port}`
+  try {
+    assert.equal((await api('GET', '/api/health', { url })).status, 403)
+    assert.equal((await api('GET', '/api/health', { url, headers: { 'x-origin-verify': 'wrong-secret-value-xx' } })).status, 403)
+    assert.equal((await api('GET', '/api/health', { url, headers: { 'x-origin-verify': 'cloudfront-only-secret' } })).status, 200)
+    assert.equal((await api('GET', '/api/health/live', { url })).status, 200, 'container health check is exempt')
+  } finally {
+    await new Promise((r) => guarded.close(r))
+  }
 })
 
 test('login rejects bad credentials and bad input without crashing', async () => {
@@ -96,9 +146,8 @@ test('login rejects bad credentials and bad input without crashing', async () =>
 })
 
 test('superadmin creates two schools in one step each', async () => {
-  const r = await api('POST', '/api/auth/login', { body: { email: 'root@test.local', password: 'RootPass#12345' } })
-  assert.equal(r.status, 200)
-  s.root = r.data.token
+  // The seeded superadmin password is a bootstrap credential: it must be changed first.
+  s.root = await firstLogin('root@test.local', 'RootPass#12345')
 
   for (const [key, n] of [['A', 'Alpha'], ['B', 'Beta']]) {
     const c = await api('POST', '/api/superadmin/schools', {
@@ -393,8 +442,114 @@ test('password reset code: works once, and locks after 5 wrong guesses', async (
   assert.equal((await api('POST', '/api/auth/reset-password', { body: { email: 'head@alpha.test', otp: '654321', newPassword: 'short' } })).status, 400)
   assert.equal((await api('POST', '/api/auth/reset-password', { body: { email: 'head@alpha.test', otp: '654321', newPassword: 'BrandNew#2026' } })).status, 200)
   assert.equal((await api('POST', '/api/auth/reset-password', { body: { email: 'head@alpha.test', otp: '654321', newPassword: 'Again#20260' } })).status, 400, 'code is single-use')
-  assert.equal((await api('POST', '/api/auth/login', { body: { email: 'head@alpha.test', password: 'BrandNew#2026' } })).status, 200)
+  assert.equal((await api('GET', '/api/auth/me', { token: s.head })).status, 401, 'a reset signs out existing sessions')
+  const relog = await api('POST', '/api/auth/login', { body: { email: 'head@alpha.test', password: 'BrandNew#2026' } })
+  assert.equal(relog.status, 200)
+  s.head = relog.data.token
   assert.equal((await api('POST', '/api/auth/verify-otp', { body: { email: 'head@alpha.test', otp: 123456 } })).status, 400, 'non-string code is a 400, not a crash')
+})
+
+test('image type check reads the real bytes', () => {
+  assert.deepEqual(sniffImage(makePng(300, 120)), { type: 'image/png', width: 300, height: 120 })
+  const jpeg = Buffer.concat([
+    Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]), Buffer.alloc(14), // APP0 segment
+    Buffer.from([0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0xc8, 0x01, 0x90]), Buffer.alloc(16), // SOF0 200x400
+  ])
+  assert.deepEqual(sniffImage(jpeg), { type: 'image/jpeg', width: 400, height: 200 })
+  const webp = Buffer.alloc(40)
+  webp.write('RIFF', 0, 'latin1'); webp.write('WEBP', 8, 'latin1'); webp.write('VP8X', 12, 'latin1')
+  webp.writeUIntLE(511, 24, 3); webp.writeUIntLE(255, 27, 3)
+  assert.deepEqual(sniffImage(webp), { type: 'image/webp', width: 512, height: 256 })
+  assert.equal(sniffImage(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>')), null)
+  assert.equal(sniffImage(Buffer.from('GIF89a' + 'x'.repeat(40))), null)
+})
+
+test('school logo: upload, read, cache, permissions, limits, remove', async () => {
+  const png = makePng(256, 128)
+  const put = (token, body, type = 'image/png') => fetch(`${base}/api/school/logo`, {
+    method: 'PUT', headers: { authorization: `Bearer ${token}`, 'content-type': type }, body,
+  })
+
+  let r = await put(s.adminA, png)
+  assert.equal(r.status, 200, await r.clone().text())
+  const { logoVersion } = await r.json()
+  assert.match(logoVersion, /^[0-9a-f]{16}$/)
+  assert.equal((await api('GET', '/api/school/settings', { token: s.teacher })).data.logoVersion, logoVersion)
+
+  // Any user of the school can load it (the report sheet needs it); bytes come back unchanged.
+  r = await fetch(`${base}/api/school/logo?v=${logoVersion}`, { headers: { authorization: `Bearer ${s.teacher}` } })
+  assert.equal(r.status, 200)
+  assert.equal(r.headers.get('content-type'), 'image/png')
+  assert.equal(r.headers.get('cache-control'), 'private, max-age=86400')
+  assert.ok(Buffer.from(await r.arrayBuffer()).equals(png))
+  const etag = r.headers.get('etag')
+  r = await fetch(`${base}/api/school/logo`, { headers: { authorization: `Bearer ${s.teacher}`, 'if-none-match': etag } })
+  assert.equal(r.status, 304)
+
+  // Only admin/head may change it; only real PNG/JPEG/WebP within limits is accepted.
+  assert.equal((await put(s.teacher, png)).status, 403)
+  const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>')
+  assert.equal((await put(s.adminA, svg, 'image/svg+xml')).status, 415)
+  assert.equal((await put(s.adminA, svg, 'image/png')).status, 415, 'a lying Content-Type does not help')
+  assert.equal((await put(s.adminA, makePng(8, 8))).status, 400, 'too small')
+  assert.equal((await put(s.adminA, Buffer.alloc(600 * 1024, 1))).status, 413, 'over 512 KB')
+  assert.equal((await put(s.head, makePng(64, 64))).status, 200, 'head teacher may change it')
+
+  // Other schools never see it.
+  assert.equal((await api('GET', '/api/school/logo', { token: s.adminB })).status, 404)
+
+  assert.equal((await api('DELETE', '/api/school/logo', { token: s.teacher })).status, 403)
+  assert.equal((await api('DELETE', '/api/school/logo', { token: s.adminA })).status, 200)
+  assert.equal((await api('GET', '/api/school/logo', { token: s.adminA })).status, 404)
+  assert.equal((await api('GET', '/api/school/settings', { token: s.adminA })).data.logoVersion, null)
+  assert.equal((await put(s.adminA, png)).status, 200) // leave one in place for the audit test
+})
+
+test('admin password reset signs the user out everywhere', async () => {
+  const u = await api('POST', '/api/users', { token: s.adminA, body: { fullName: 'Reset Me', email: 'resetme@alpha.test', role: 'head' } })
+  const tok = await firstLogin('resetme@alpha.test', u.data.credentials.password)
+  assert.equal((await api('GET', '/api/auth/me', { token: tok })).status, 200)
+  const r = await api('POST', `/api/users/${u.data.user._id}/reset-password`, { token: s.adminA })
+  assert.equal(r.status, 200)
+  assert.equal((await api('GET', '/api/auth/me', { token: tok })).status, 401)
+})
+
+test('audit log records who changed what, per school', async () => {
+  const all = await api('GET', '/api/audit?limit=200', { token: s.adminA })
+  assert.equal(all.status, 200)
+  const actions = all.data.entries.map((e) => e.action)
+  for (const a of ['settings.update', 'class.create', 'class.update', 'subject.create', 'max_marks.update',
+    'user.create', 'user.update', 'student.create', 'student.remove', 'scores.save', 'score.update',
+    'auth.change_password', 'auth.reset_password', 'user.reset_password',
+    'settings.logo_update', 'settings.logo_remove']) {
+    assert.ok(actions.includes(a), `missing audit action ${a}`)
+  }
+  assert.ok(all.data.entries.every((e) => e.schoolId === s.schoolA), 'admin sees only own school')
+
+  // The second save changed Kwame's maths marks: old and new values are recorded.
+  const saves = (await api('GET', '/api/audit?action=scores.', { token: s.adminA })).data.entries
+  const change = saves.flatMap((e) => e.details.modified || []).find((m) => m.studentId === s.kwame && m.subjectId === s.math)
+  assert.deepEqual(change.classScore, [27, 28])
+  assert.deepEqual(change.examScore, [80, 81])
+  assert.ok(saves.some((e) => (e.details.removed || []).some((m) => m.studentId === s.yaw)), 'cleared score recorded')
+  assert.ok(saves.every((e) => e.actor.name && e.requestId), 'actor and request id recorded')
+
+  // Filter by record; paging; permissions.
+  const forKwame = await api('GET', `/api/audit?targetType=student&targetId=${s.kwame}`, { token: s.adminA })
+  assert.ok(forKwame.data.entries.length >= 1)
+  const page1 = await api('GET', '/api/audit?limit=3', { token: s.adminA })
+  assert.equal(page1.data.entries.length, 3)
+  const page2 = await api('GET', `/api/audit?limit=3&before=${page1.data.nextBefore}`, { token: s.adminA })
+  assert.ok(page2.data.entries.every((e) => e.id < page1.data.nextBefore))
+  assert.equal((await api('GET', '/api/audit', { token: s.head })).status, 403)
+  assert.equal((await api('GET', '/api/audit', { token: s.teacher })).status, 403)
+  const rootView = await api('GET', `/api/audit?action=school.create`, { token: s.root })
+  assert.equal(rootView.data.entries.length, 2)
+  assert.equal((await api('GET', '/api/audit?before=abc', { token: s.adminA })).status, 400)
+
+  // No secrets ever land in the log.
+  const raw = JSON.stringify(all.data)
+  assert.ok(!/password_hash|otp_hash|\$2[aby]\$/.test(raw))
 })
 
 test('deactivating a school or user cuts off existing sessions at once', async () => {

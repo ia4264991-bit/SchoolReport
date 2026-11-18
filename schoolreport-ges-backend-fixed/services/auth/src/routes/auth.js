@@ -3,6 +3,8 @@ import crypto from 'node:crypto'
 import rateLimit from 'express-rate-limit'
 import { query } from '../../../../shared/db.js'
 import { ah, HttpError, isEmail } from '../../../../shared/http.js'
+import { audit } from '../../../../shared/audit.js'
+import { log } from '../../../../shared/log.js'
 import { requireAuthAllowPasswordChange, signToken } from '../middleware/auth.js'
 import {
   USER_COLUMNS, PASSWORD_MIN, PASSWORD_MAX,
@@ -52,14 +54,16 @@ router.post('/login', authLimiter, ah(async (req, res) => {
   const user = rows[0]
   const match = await verifyPassword(password, user?.password_hash)
   if (!user || !match || !user.is_active) {
+    log.warn('login failed', { reqId: req.id, ip: req.ip, known: Boolean(user), active: user?.is_active })
     throw new HttpError(401, 'Invalid email or password.')
   }
   if (user.school_id && !user.school_active) {
     throw new HttpError(403, "This school's account is deactivated. Contact the platform administrator.")
   }
+  log.info('login', { reqId: req.id, ip: req.ip, user: user.id, role: user.role })
 
   res.json({
-    token: signToken(user.id),
+    token: signToken(user.id, user.token_version),
     user: userToApi(user),
     mustChangePassword: user.must_change_password,
   })
@@ -87,13 +91,19 @@ router.post('/change-password', requireAuthAllowPasswordChange, ah(async (req, r
     throw new HttpError(400, 'Current password is incorrect.')
   }
 
-  await query(
-    `UPDATE users SET password_hash = $2, must_change_password = false,
+  // Bumping token_version signs out every other session; this one gets a fresh token.
+  const updated = await query(
+    `UPDATE users SET password_hash = $2, must_change_password = false, token_version = token_version + 1,
             otp_hash = NULL, otp_expires_at = NULL, otp_attempts = 0
-      WHERE id = $1`,
+      WHERE id = $1
+      RETURNING token_version`,
     [req.user.id, await hashPassword(newPassword)]
   )
-  res.json({ message: 'Password changed successfully.' })
+  await audit(req, 'auth.change_password', { targetType: 'user', targetId: req.user.id })
+  res.json({
+    message: 'Password changed successfully.',
+    token: signToken(req.user.id, updated.rows[0].token_version),
+  })
 }))
 
 /* POST /api/auth/forgot-password — step 1: email a 6-digit code */
@@ -141,6 +151,7 @@ async function checkOtp(email, otp) {
   const expected = Buffer.from(user.otp_hash, 'hex')
   const given = Buffer.from(hashOtp(user.id, otp.trim()), 'hex')
   if (!crypto.timingSafeEqual(expected, given)) {
+    if (user.otp_attempts + 1 >= OTP_MAX_ATTEMPTS) log.warn('reset code locked after too many wrong tries', { user: user.id })
     await query(
       `UPDATE users SET otp_attempts = otp_attempts + 1,
               otp_hash       = CASE WHEN otp_attempts + 1 >= $2 THEN NULL ELSE otp_hash END,
@@ -163,12 +174,19 @@ router.post('/verify-otp', authLimiter, ah(async (req, res) => {
 router.post('/reset-password', authLimiter, ah(async (req, res) => {
   checkNewPassword(req.body?.newPassword)
   const userId = await checkOtp(emailFrom(req.body), req.body?.otp)
-  await query(
-    `UPDATE users SET password_hash = $2, must_change_password = false,
+  const { rows } = await query(
+    `UPDATE users SET password_hash = $2, must_change_password = false, token_version = token_version + 1,
             otp_hash = NULL, otp_expires_at = NULL, otp_attempts = 0
-      WHERE id = $1`,
+      WHERE id = $1
+      RETURNING id, school_id, full_name, role`,
     [userId, await hashPassword(req.body.newPassword)]
   )
+  const u = rows[0]
+  // No one is signed in here: record the user themself as the actor.
+  await audit(req, 'auth.reset_password', {
+    targetType: 'user', targetId: u.id,
+    actor: { id: u.id, schoolId: u.school_id, fullName: u.full_name, role: u.role },
+  })
   res.json({ message: 'Password reset successfully. You can now log in.' })
 }))
 
