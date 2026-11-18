@@ -174,7 +174,7 @@ Score reads use the school's current academic year; add `?academicYear=2025/2026
 
 ## 🔜 Next steps
 
-- [ ] Link student logins to a student record so students can see their own report
+- [x] Link student logins to a student record so students can see their own report
 - [ ] Choose a past academic year on the Scores and Reports pages (the API already supports it)
 - [ ] Affective skills & psychomotor scoring; class teacher / head teacher remarks
 - [ ] PDF export of reports
