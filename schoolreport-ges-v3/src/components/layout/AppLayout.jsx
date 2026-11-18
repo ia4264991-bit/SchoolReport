@@ -31,7 +31,7 @@ function getNavItems(role) {
     { path: '/classes',    icon: GraduationCap,   label: 'Classes',         roles: ['admin','head'] },
     { path: '/students',   icon: Users,            label: 'Students',        roles: ['admin','head','teacher'] },
     { path: '/scores',     icon: BookOpen,         label: 'Score Entry',     roles: ['admin','head','teacher'] },
-    { path: '/reports',    icon: FileText,         label: 'Reports',         roles: ['admin','head','teacher','student'] },
+    { path: '/reports',    icon: FileText,         label: 'Reports',         roles: ['admin','head','teacher'] },
     { path: '/users',      icon: ClipboardList,    label: 'User Mgmt',       roles: ['admin'] },
     { path: '/settings',   icon: Settings,         label: 'Settings',        roles: ['admin','head'] },
   ]
@@ -105,13 +105,15 @@ function SidebarContent({ user, settings, location, onNavigate, onLogout }) {
 }
 
 export default function AppLayout() {
-  const { user, logout } = useAuthStore()
+  const { user, logout, refreshUser } = useAuthStore()
   const { settings, fetchSettings } = useSchoolStore()
   const navigate = useNavigate()
   const location = useLocation()
   const [drawerOpen, setDrawerOpen] = useState(false)
 
   useEffect(() => {
+    // Pick up role/class changes an admin made since this browser last signed in.
+    refreshUser()
     if (user?.role !== 'superadmin') fetchSettings()
   }, [])
 

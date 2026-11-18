@@ -12,6 +12,7 @@ export default {
         green: {
           DEFAULT: '#3B6D11',
           light: '#EAF3DE',
+          200: '#C0DD97',
         },
         amber: {
           DEFAULT: '#854F0B',
@@ -20,6 +21,10 @@ export default {
         red: {
           DEFAULT: '#c0392b',
           light: '#FCEBEB',
+          // shades used by error boxes and out-of-range score inputs
+          200: '#F7C1C1',
+          300: '#F09595',
+          400: '#E06666',
         },
         border: '#e3e8f0',
         bg: '#f4f6fb',

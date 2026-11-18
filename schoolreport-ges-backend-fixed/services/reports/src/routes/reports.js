@@ -1,149 +1,264 @@
 import { Router } from 'express'
-import Score from '../models/Score.js'
-import { requireAuth, requireRole } from '../middleware/auth.js'
+import { query, withTransaction } from '../../../../shared/db.js'
+import { ah, HttpError, isUuid, idParam, termParam, str } from '../../../../shared/http.js'
+import { requireAuth, requireRole, requireSchool, assertClassAccess } from '../middleware/auth.js'
+import { ensureSettings } from '../../../school/src/models/index.js'
+import { scoreToApi, weightedTotal } from '../models/Score.js'
 
-// Two routers — each mounted at a different prefix in the main server
-// scoresRouter → /api/scores
-// reportsRouter → /api/reports
-// All paths are RELATIVE — no /scores/* or /reports/* prefix inside these files.
+// Two routers, mounted in the main server:
+//   scoresRouter  → /api/scores
+//   reportsRouter → /api/reports
+// Every score belongs to an academic year. Reads use ?academicYear=… when given,
+// otherwise the school's current year from Settings; writes always use the current year.
 
 const sid = (req) => req.user.schoolId
 
+async function academicYearFor(req, { allowQuery = true } = {}) {
+  if (allowQuery && req.query.academicYear) return str(req.query.academicYear, 'Academic year', { max: 20 })
+  return (await ensureSettings(sid(req))).academic_year
+}
+
+/** Loads a student of the caller's school and checks the caller may see their class. */
+async function studentWithAccess(req, studentId) {
+  if (req.user.role === 'student') throw new HttpError(403, 'Student accounts cannot view score records.')
+  const id = idParam(studentId, 'Student')
+  const { rows } = await query('SELECT id, class_id FROM students WHERE id = $1 AND school_id = $2', [id, sid(req)])
+  const s = rows[0]
+  if (!s || (req.user.role === 'teacher' && s.class_id !== req.user.classId)) {
+    throw new HttpError(404, 'Student not found.')
+  }
+  return s
+}
+
+async function studentScores(req, res) {
+  const student = await studentWithAccess(req, req.params.studentId)
+  const term = termParam(req.params.term)
+  const { rows } = await query(
+    `SELECT * FROM scores
+      WHERE school_id = $1 AND student_id = $2 AND academic_year = $3 AND term = $4`,
+    [sid(req), student.id, await academicYearFor(req), term]
+  )
+  res.json(rows.map(scoreToApi))
+}
+
 // ══════════════════════════════════════════════════════
-//  SCORES ROUTER  (mounted at /api/scores)
+//  SCORES ROUTER (mounted at /api/scores)
 // ══════════════════════════════════════════════════════
 export const scoresRouter = Router()
+scoresRouter.use(requireAuth, requireSchool)
 
 /* GET /api/scores/student/:studentId/:term
-   Must be defined BEFORE /:classId/:term to avoid param shadowing */
-scoresRouter.get('/student/:studentId/:term', requireAuth, async (req, res) => {
-  try {
-    const scores = await Score.find({
-      schoolId:  sid(req),
-      studentId: req.params.studentId,
-      term:      req.params.term,
-    })
-    res.json(scores)
-  } catch (err) { res.status(500).json({ message: err.message }) }
-})
+   Defined before /:classId/:term so "student" is not read as a class id. */
+scoresRouter.get('/student/:studentId/:term', ah(studentScores))
 
 /* GET /api/scores/:classId/:term */
-scoresRouter.get('/:classId/:term', requireAuth, async (req, res) => {
-  try {
-    const { classId, term } = req.params
-    if (req.user.role === 'teacher' && req.user.classId !== classId) {
-      return res.status(403).json({ message: 'Access denied to this class.' })
+scoresRouter.get('/:classId/:term', ah(async (req, res) => {
+  const cls = await assertClassAccess(req, req.params.classId)
+  const term = termParam(req.params.term)
+  const { rows } = await query(
+    `SELECT * FROM scores
+      WHERE school_id = $1 AND class_id = $2 AND academic_year = $3 AND term = $4`,
+    [sid(req), cls.id, await academicYearFor(req), term]
+  )
+  res.json(rows.map(scoreToApi))
+}))
+
+/** Turns '' / null / undefined into null; anything else must be a number within [0, max]. */
+function scoreValue(raw, max, label) {
+  if (raw === '' || raw === null || raw === undefined) return null
+  const n = typeof raw === 'number' ? raw : Number(String(raw).trim())
+  if (!Number.isFinite(n) || n < 0 || n > max) throw new Error(`${label} must be between 0 and ${max}`)
+  return Math.round(n * 100) / 100
+}
+
+/* POST /api/scores/:classId/:term/bulk
+   Body: { scores: { [studentId]: { [subjectId]: { classScore, examScore } } } }
+   A subject with both fields empty deletes that saved score. */
+scoresRouter.post('/:classId/:term/bulk', ah(async (req, res) => {
+  const cls = await assertClassAccess(req, req.params.classId)
+  const term = termParam(req.params.term)
+  const scores = req.body?.scores
+  if (!scores || typeof scores !== 'object' || Array.isArray(scores)) {
+    throw new HttpError(400, 'Send scores as { studentId: { subjectId: { classScore, examScore } } }.')
+  }
+  const academicYear = await academicYearFor(req, { allowQuery: false })
+
+  // What may be written: active students of this class, subjects of this school.
+  const [studentsRes, subjectsRes] = await Promise.all([
+    query('SELECT id, full_name FROM students WHERE school_id = $1 AND class_id = $2 AND is_active', [sid(req), cls.id]),
+    query('SELECT id, name, max_class_score FROM subjects WHERE school_id = $1', [sid(req)]),
+  ])
+  const students = new Map(studentsRes.rows.map((s) => [s.id, s.full_name]))
+  const subjects = new Map(subjectsRes.rows.map((s) => [s.id, s]))
+
+  const upserts = { student: [], subject: [], cs: [], es: [] }
+  const clears = { student: [], subject: [] }
+  const problems = []
+
+  for (const [studentId, perSubject] of Object.entries(scores)) {
+    if (!students.has(studentId)) {
+      problems.push(`Student ${studentId} is not in this class`)
+      continue
     }
-    const scores = await Score.find({ schoolId: sid(req), classId, term })
-    res.json(scores)
-  } catch (err) { res.status(500).json({ message: err.message }) }
-})
-
-/* POST /api/scores/:classId/:term/bulk */
-scoresRouter.post('/:classId/:term/bulk', requireAuth, async (req, res) => {
-  try {
-    const { classId, term } = req.params
-    const { scores } = req.body
-    const schoolId = sid(req)
-
-    const ops = []
-    for (const [studentId, subjects] of Object.entries(scores)) {
-      for (const [subjectId, vals] of Object.entries(subjects)) {
-        if (vals.classScore === '' && vals.examScore === '') continue
-        ops.push({
-          updateOne: {
-            filter: { studentId, subjectId, term, schoolId },
-            update: { $set: { classId, schoolId, classScore: parseFloat(vals.classScore) || 0, examScore: parseFloat(vals.examScore) || 0 } },
-            upsert: true,
-          }
-        })
+    if (!perSubject || typeof perSubject !== 'object') continue
+    for (const [subjectId, vals] of Object.entries(perSubject)) {
+      const subject = subjects.get(subjectId)
+      if (!subject) {
+        problems.push(`Unknown subject ${subjectId}`)
+        continue
+      }
+      try {
+        const max = subject.max_class_score > 0 ? subject.max_class_score : 100
+        const who = `${students.get(studentId)} — ${subject.name}`
+        const cs = scoreValue(vals?.classScore, max, `${who}: class score`)
+        const es = scoreValue(vals?.examScore, 100, `${who}: exam score`)
+        if (cs === null && es === null) {
+          clears.student.push(studentId)
+          clears.subject.push(subjectId)
+        } else {
+          upserts.student.push(studentId)
+          upserts.subject.push(subjectId)
+          upserts.cs.push(cs ?? 0)
+          upserts.es.push(es ?? 0)
+        }
+      } catch (err) {
+        problems.push(err.message)
       }
     }
-    if (ops.length) await Score.bulkWrite(ops)
-    res.json({ message: `${ops.length} score entries saved.` })
-  } catch (err) { res.status(500).json({ message: err.message }) }
-})
+  }
+  if (problems.length) {
+    const more = problems.length > 5 ? ` (and ${problems.length - 5} more)` : ''
+    throw new HttpError(400, `Nothing was saved. ${problems.slice(0, 5).join('; ')}${more}.`)
+  }
 
-/* PUT /api/scores/:id */
-scoresRouter.put('/:id', requireAuth, async (req, res) => {
+  await withTransaction(async (db) => {
+    if (upserts.student.length) {
+      await db.query(
+        `INSERT INTO scores (school_id, class_id, academic_year, term, student_id, subject_id, class_score, exam_score)
+         SELECT $1, $2, $3, $4, u.student_id, u.subject_id, u.class_score, u.exam_score
+           FROM unnest($5::uuid[], $6::uuid[], $7::numeric[], $8::numeric[])
+                AS u(student_id, subject_id, class_score, exam_score)
+         ON CONFLICT ON CONSTRAINT scores_one_per_subject DO UPDATE
+            SET class_id = EXCLUDED.class_id,
+                class_score = EXCLUDED.class_score,
+                exam_score = EXCLUDED.exam_score`,
+        [sid(req), cls.id, academicYear, term, upserts.student, upserts.subject, upserts.cs, upserts.es]
+      )
+    }
+    if (clears.student.length) {
+      await db.query(
+        `DELETE FROM scores sc
+          USING unnest($4::uuid[], $5::uuid[]) AS c(student_id, subject_id)
+          WHERE sc.school_id = $1 AND sc.academic_year = $2 AND sc.term = $3
+            AND sc.student_id = c.student_id AND sc.subject_id = c.subject_id`,
+        [sid(req), academicYear, term, clears.student, clears.subject]
+      )
+    }
+  })
+
+  res.json({
+    message: `${upserts.student.length} score entries saved.`,
+    saved: upserts.student.length,
+    cleared: clears.student.length,
+  })
+}))
+
+/* PUT /api/scores/:id  { classScore?, examScore? } */
+scoresRouter.put('/:id', ah(async (req, res) => {
+  const id = idParam(req.params.id, 'Score')
+  const { rows } = await query(
+    `SELECT sc.*, su.max_class_score, su.name AS subject_name
+       FROM scores sc JOIN subjects su ON su.id = sc.subject_id
+      WHERE sc.id = $1 AND sc.school_id = $2`,
+    [id, sid(req)]
+  )
+  const score = rows[0]
+  if (!score) throw new HttpError(404, 'Score not found.')
+  await assertClassAccess(req, score.class_id)
+
+  let cs, es
   try {
-    const score = await Score.findOneAndUpdate(
-      { _id: req.params.id, schoolId: sid(req) },
-      req.body,
-      { new: true }
-    )
-    if (!score) return res.status(404).json({ message: 'Score not found.' })
-    res.json(score)
-  } catch (err) { res.status(400).json({ message: err.message }) }
-})
+    const max = score.max_class_score > 0 ? score.max_class_score : 100
+    cs = req.body?.classScore === undefined ? score.class_score : scoreValue(req.body.classScore, max, 'Class score') ?? 0
+    es = req.body?.examScore === undefined ? score.exam_score : scoreValue(req.body.examScore, 100, 'Exam score') ?? 0
+  } catch (err) {
+    throw new HttpError(400, err.message)
+  }
 
-/* DELETE /api/scores/:classId/:term */
-scoresRouter.delete('/:classId/:term', requireAuth, requireRole('admin'), async (req, res) => {
-  try {
-    const result = await Score.deleteMany({
-      schoolId: sid(req),
-      classId:  req.params.classId,
-      term:     req.params.term,
-    })
-    res.json({ message: `${result.deletedCount} scores deleted.` })
-  } catch (err) { res.status(500).json({ message: err.message }) }
-})
+  const updated = await query(
+    'UPDATE scores SET class_score = $2, exam_score = $3 WHERE id = $1 RETURNING *',
+    [id, cs, es]
+  )
+  res.json(scoreToApi(updated.rows[0]))
+}))
 
+/* DELETE /api/scores/:classId/:term — clear a class's scores for the current year */
+scoresRouter.delete('/:classId/:term', requireRole('admin'), ah(async (req, res) => {
+  const cls = await assertClassAccess(req, req.params.classId)
+  const term = termParam(req.params.term)
+  const result = await query(
+    'DELETE FROM scores WHERE school_id = $1 AND class_id = $2 AND academic_year = $3 AND term = $4',
+    [sid(req), cls.id, await academicYearFor(req, { allowQuery: false }), term]
+  )
+  res.json({ message: `${result.rowCount} scores deleted.` })
+}))
 
 // ══════════════════════════════════════════════════════
-//  REPORTS ROUTER  (mounted at /api/reports)
+//  REPORTS ROUTER (mounted at /api/reports)
 // ══════════════════════════════════════════════════════
 export const reportsRouter = Router()
+reportsRouter.use(requireAuth)
 
 /* GET /api/reports/student/:studentId/:term */
-reportsRouter.get('/student/:studentId/:term', requireAuth, async (req, res) => {
-  try {
-    const scores = await Score.find({
-      schoolId:  sid(req),
-      studentId: req.params.studentId,
-      term:      req.params.term,
-    })
-    res.json(scores)
-  } catch (err) { res.status(500).json({ message: err.message }) }
-})
+reportsRouter.get('/student/:studentId/:term', requireSchool, ah(studentScores))
 
-/* GET /api/reports/class/:classId/:term */
-reportsRouter.get('/class/:classId/:term', requireAuth, async (req, res) => {
-  try {
-    const scores = await Score.find({
-      schoolId: sid(req),
-      classId:  req.params.classId,
-      term:     req.params.term,
-    })
-    const grouped = {}
-    scores.forEach(s => {
-      if (!grouped[s.studentId]) grouped[s.studentId] = []
-      grouped[s.studentId].push(s)
-    })
-    res.json(grouped)
-  } catch (err) { res.status(500).json({ message: err.message }) }
-})
+/* GET /api/reports/class/:classId/:term — scores grouped by student */
+reportsRouter.get('/class/:classId/:term', requireSchool, ah(async (req, res) => {
+  const cls = await assertClassAccess(req, req.params.classId)
+  const term = termParam(req.params.term)
+  const { rows } = await query(
+    `SELECT * FROM scores
+      WHERE school_id = $1 AND class_id = $2 AND academic_year = $3 AND term = $4`,
+    [sid(req), cls.id, await academicYearFor(req), term]
+  )
+  const grouped = {}
+  for (const r of rows) (grouped[r.student_id] ||= []).push(scoreToApi(r))
+  res.json(grouped)
+}))
 
-/* GET /api/reports/school/:schoolId/analytics */
-reportsRouter.get('/school/:schoolId/analytics', requireAuth, requireRole('admin', 'head', 'superadmin'), async (req, res) => {
-  try {
-    if (req.user.role !== 'superadmin' && req.params.schoolId !== sid(req)) {
-      return res.status(403).json({ message: 'Access denied.' })
-    }
-    const scores = await Score.find({ schoolId: req.params.schoolId })
-    const totalEntries = scores.length
-    const avgScore = totalEntries
-      ? (scores.reduce((a, s) => a + ((s.classScore / 100 * 40) + (s.examScore / 100 * 60)), 0) / totalEntries).toFixed(1)
-      : 0
-    const classBreakdown = {}
-    scores.forEach(s => {
-      if (!classBreakdown[s.classId]) classBreakdown[s.classId] = { count: 0, total: 0 }
-      classBreakdown[s.classId].count++
-      classBreakdown[s.classId].total += (s.classScore / 100 * 40) + (s.examScore / 100 * 60)
-    })
-    res.json({ totalEntries, avgScore, classBreakdown })
-  } catch (err) { res.status(500).json({ message: err.message }) }
-})
+/* GET /api/reports/school/:schoolId/analytics — average weighted total, overall and per class */
+reportsRouter.get('/school/:schoolId/analytics', requireRole('admin', 'head', 'superadmin'), ah(async (req, res) => {
+  const schoolId = idParam(req.params.schoolId, 'School')
+  if (req.user.role !== 'superadmin' && schoolId !== sid(req)) throw new HttpError(403, 'Access denied.')
+
+  const { rows: settingsRows } = await query('SELECT academic_year FROM school_settings WHERE school_id = $1', [schoolId])
+  const academicYear = req.query.academicYear
+    ? str(req.query.academicYear, 'Academic year', { max: 20 })
+    : settingsRows[0]?.academic_year
+  if (!academicYear) return res.json({ totalEntries: 0, avgScore: 0, classBreakdown: {} })
+
+  const { rows } = await query(
+    `SELECT sc.class_id, sc.class_score, sc.exam_score, su.max_class_score
+       FROM scores sc JOIN subjects su ON su.id = sc.subject_id
+      WHERE sc.school_id = $1 AND sc.academic_year = $2`,
+    [schoolId, academicYear]
+  )
+  let sum = 0
+  const classBreakdown = {}
+  for (const r of rows) {
+    const t = weightedTotal(r.class_score, r.exam_score, r.max_class_score)
+    sum += t
+    const c = (classBreakdown[r.class_id] ||= { count: 0, total: 0 })
+    c.count++
+    c.total += t
+  }
+  res.json({
+    academicYear,
+    totalEntries: rows.length,
+    avgScore: rows.length ? Number((sum / rows.length).toFixed(1)) : 0,
+    classBreakdown,
+  })
+}))
 
 // Default export kept for backward compatibility (unused internally)
 export default scoresRouter

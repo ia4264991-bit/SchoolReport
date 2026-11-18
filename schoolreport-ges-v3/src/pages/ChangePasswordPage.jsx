@@ -1,12 +1,12 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useAuthStore } from '@/store/authStore'
+import { useAuthStore, homePath } from '@/store/authStore'
 import api from '@/lib/api'
 import { Shield, Eye, EyeOff, Lock } from 'lucide-react'
 import toast from 'react-hot-toast'
 
 export default function ChangePasswordPage() {
-  const { updateUser, logout } = useAuthStore()
+  const { user, updateUser, logout } = useAuthStore()
   const navigate = useNavigate()
   const [form, setForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' })
   const [showPw, setShowPw] = useState(false)
@@ -28,7 +28,7 @@ export default function ChangePasswordPage() {
       })
       updateUser({ mustChangePassword: false })
       toast.success('Password changed successfully!')
-      navigate('/dashboard')
+      navigate(homePath(user))
     } catch (err) {
       setError(err.response?.data?.message || 'Failed to change password.')
     } finally {

@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useSchoolStore } from '@/store/schoolStore'
-import api from '@/lib/api'
+import api, { errorMessage } from '@/lib/api'
 import { Card, SectionHeader, Button, Select, Alert, Spinner, EmptyState, PageHeader } from '@/components/ui'
 import { Save, BookOpen, ChevronLeft, ChevronRight } from 'lucide-react'
 import toast from 'react-hot-toast'
@@ -21,26 +21,51 @@ function getGrade(total) {
   return { g: 'F9', cls: 'text-red font-bold' }
 }
 
+/** A typed value is out of range if it is not a number between 0 and max. Empty is fine. */
+const outOfRange = (v, max) => v !== '' && v !== undefined && v !== null &&
+  (isNaN(parseFloat(v)) || parseFloat(v) < 0 || parseFloat(v) > max)
+
 export default function ScoresPage() {
   const { user } = useAuthStore()
-  const { classes, subjects, fetchClasses, fetchSubjects } = useSchoolStore()
-  const [selectedClass, setSelectedClass] = useState(user?.classId || '')
-  const [term, setTerm] = useState('1')
+  const { classes, subjects, settings, fetchClasses, fetchSubjects } = useSchoolStore()
+  const isTeacher = user?.role === 'teacher'
+  const [pickedClass, setPickedClass] = useState('')
+  const selectedClass = isTeacher ? (user?.classId || '') : pickedClass
+  const [term, setTerm] = useState(settings?.term || '1')
+  const termTouched = useRef(false)
   const [students, setStudents] = useState([])
   const [scores, setScores] = useState({})
   const [maxMarks, setMaxMarks] = useState({})
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [dirty, setDirty] = useState(false)
   // Mobile: show one subject at a time
   const [subjectIdx, setSubjectIdx] = useState(0)
 
   useEffect(() => { fetchClasses(); fetchSubjects() }, [])
 
+  // Start on the school's current term once settings arrive (unless the user already picked one).
+  useEffect(() => {
+    if (settings?.term && !termTouched.current) setTerm(settings.term)
+  }, [settings?.term])
+
+  useEffect(() => {
+    if (subjectIdx >= subjects.length) setSubjectIdx(0)
+  }, [subjects.length])
+
+  // Warn before closing the tab with unsaved scores.
+  useEffect(() => {
+    if (!dirty) return
+    const warn = (e) => { e.preventDefault(); e.returnValue = '' }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [dirty])
+
   useEffect(() => {
     if (!selectedClass) return
     setLoading(true)
     Promise.all([
-      api.get(`/students?classId=${selectedClass}`),
+      api.get('/students', { params: { classId: selectedClass } }),
       api.get(`/scores/${selectedClass}/${term}`),
       api.get('/school/max-marks'),
     ]).then(([studRes, scoreRes, marksRes]) => {
@@ -48,41 +73,91 @@ export default function ScoresPage() {
       const map = {}
       studRes.data.forEach(s => { map[s._id] = {} })
       scoreRes.data.forEach(entry => {
-        if (!map[entry.studentId]) map[entry.studentId] = {}
+        if (!map[entry.studentId]) return // e.g. a student since moved to another class
         map[entry.studentId][entry.subjectId] = { classScore: entry.classScore, examScore: entry.examScore }
       })
       setScores(map)
       setMaxMarks(marksRes.data)
-    }).catch(() => toast.error('Failed to load scores'))
+      setDirty(false)
+    }).catch((err) => toast.error(errorMessage(err, 'Failed to load scores')))
       .finally(() => setLoading(false))
   }, [selectedClass, term])
 
+  const confirmDiscard = () => !dirty || confirm('You have unsaved scores. Discard them?')
+
+  const changeClass = (id) => { if (confirmDiscard()) setPickedClass(id) }
+  const changeTerm = (t) => {
+    if (!confirmDiscard()) return
+    termTouched.current = true
+    setTerm(t)
+  }
+
   const update = (studentId, subjectId, field, val) => {
+    setDirty(true)
     setScores(s => ({
       ...s,
       [studentId]: { ...s[studentId], [subjectId]: { ...(s[studentId]?.[subjectId] || {}), [field]: val } }
     }))
   }
 
+  const maxFor = (subjectId) => maxMarks[subjectId] || 100
+
   const calcTotal = (studentId, subjectId) => {
     const entry = scores[studentId]?.[subjectId]
-    if (!entry) return '—'
-    const max = maxMarks[subjectId] || 100
-    const csConverted = (parseFloat(entry.classScore || 0) / max) * 40
+    if (!entry || ((entry.classScore ?? '') === '' && (entry.examScore ?? '') === '')) return '—'
+    const csConverted = (parseFloat(entry.classScore || 0) / maxFor(subjectId)) * 40
     const esConverted = (parseFloat(entry.examScore || 0) / 100) * 60
     return (csConverted + esConverted).toFixed(1)
   }
 
   const saveAll = async () => {
+    // Catch out-of-range marks here so the teacher sees exactly which ones to fix.
+    const problems = []
+    for (const st of students) {
+      for (const sub of subjects) {
+        const e = scores[st._id]?.[sub._id]
+        if (!e) continue
+        if (outOfRange(e.classScore, maxFor(sub._id))) problems.push(`${st.fullName} – ${sub.name} class score (max ${maxFor(sub._id)})`)
+        if (outOfRange(e.examScore, 100)) problems.push(`${st.fullName} – ${sub.name} exam score (max 100)`)
+      }
+    }
+    if (problems.length) {
+      toast.error(`Fix ${problems.length} out-of-range mark(s) first: ${problems.slice(0, 3).join('; ')}${problems.length > 3 ? '…' : ''}`, { duration: 6000 })
+      return
+    }
+
     setSaving(true)
     try {
-      await api.post(`/scores/${selectedClass}/${term}/bulk`, { scores })
-      toast.success('Scores saved!')
-    } catch { toast.error('Failed to save scores') }
-    finally { setSaving(false) }
+      const { data } = await api.post(`/scores/${selectedClass}/${term}/bulk`, { scores })
+      setDirty(false)
+      toast.success(data.cleared ? `Scores saved (${data.cleared} cleared)` : 'Scores saved!')
+    } catch (err) {
+      toast.error(errorMessage(err, 'Failed to save scores'), { duration: 6000 })
+    } finally { setSaving(false) }
   }
 
   const currentSubject = subjects[subjectIdx]
+
+  const scoreInput = (s, sub, field, max) => {
+    const value = scores[s._id]?.[sub._id]?.[field] ?? ''
+    return (
+      <input
+        type="number" min="0" max={max} step="0.5" value={value} inputMode="decimal"
+        aria-label={`${s.fullName} ${sub.name} ${field === 'classScore' ? 'class' : 'exam'} score`}
+        onChange={e => update(s._id, sub._id, field, e.target.value)}
+        className={clsx('si', outOfRange(value, max) && 'over')}
+      />
+    )
+  }
+
+  if (isTeacher && !user?.classId) {
+    return (
+      <div>
+        <PageHeader title="Score Entry" subtitle="Class Score (40%) + Exam Score (60%) = Total" />
+        <Card><EmptyState icon={BookOpen} title="No class assigned" description="Ask your school admin to assign you a class." /></Card>
+      </div>
+    )
+  }
 
   return (
     <div>
@@ -90,19 +165,20 @@ export default function ScoresPage() {
 
       <Alert variant="info">
         📌 Class Score uses your configured max mark per subject. Exam score is always out of 100.
+        Clearing both boxes for a subject and saving removes that score.
       </Alert>
 
       {/* Controls */}
       <Card>
-        <SectionHeader title="Class & Term">
+        <SectionHeader title={settings?.academicYear ? `Class & Term · ${settings.academicYear}` : 'Class & Term'}>
           <div className="flex flex-wrap gap-2">
-            {user?.role !== 'teacher' && (
-              <Select className="w-36 sm:w-44" value={selectedClass} onChange={e => setSelectedClass(e.target.value)}>
+            {!isTeacher && (
+              <Select className="w-36 sm:w-44" value={selectedClass} onChange={e => changeClass(e.target.value)}>
                 <option value="">Select class…</option>
                 {classes.map(c => <option key={c._id} value={c._id}>{c.name}</option>)}
               </Select>
             )}
-            <Select className="w-28 sm:w-32" value={term} onChange={e => setTerm(e.target.value)}>
+            <Select className="w-28 sm:w-32" value={term} onChange={e => changeTerm(e.target.value)}>
               <option value="1">Term 1</option>
               <option value="2">Term 2</option>
               <option value="3">Term 3</option>
@@ -127,6 +203,7 @@ export default function ScoresPage() {
                 <button
                   onClick={() => setSubjectIdx(i => Math.max(0, i - 1))}
                   disabled={subjectIdx === 0}
+                  aria-label="Previous subject"
                   className="p-2 rounded-lg border border-border disabled:opacity-30 hover:bg-blue-light transition-all"
                 >
                   <ChevronLeft className="w-4 h-4" />
@@ -138,6 +215,7 @@ export default function ScoresPage() {
                 <button
                   onClick={() => setSubjectIdx(i => Math.min(subjects.length - 1, i + 1))}
                   disabled={subjectIdx === subjects.length - 1}
+                  aria-label="Next subject"
                   className="p-2 rounded-lg border border-border disabled:opacity-30 hover:bg-blue-light transition-all"
                 >
                   <ChevronRight className="w-4 h-4" />
@@ -147,19 +225,15 @@ export default function ScoresPage() {
               {/* Score legend */}
               {currentSubject && (
                 <div className="flex gap-3 text-[11px] text-gray-500 mb-3 bg-[#f8faff] rounded-lg px-3 py-2">
-                  <span>CS = Class Score (max {maxMarks[currentSubject._id] || '?'})</span>
+                  <span>CS = Class Score (max {maxFor(currentSubject._id)})</span>
                   <span>ES = Exam Score (/100)</span>
                 </div>
               )}
 
               {/* Student rows for current subject */}
               <div className="space-y-2">
-                {students.map((s, i) => {
-                  if (!currentSubject) return null
+                {currentSubject && students.map((s, i) => {
                   const sub = currentSubject
-                  const max = maxMarks[sub._id] || 100
-                  const cs = scores[s._id]?.[sub._id]?.classScore ?? ''
-                  const es = scores[s._id]?.[sub._id]?.examScore ?? ''
                   const tot = calcTotal(s._id, sub._id)
                   const grade = getGrade(tot)
                   return (
@@ -171,23 +245,15 @@ export default function ScoresPage() {
                       <div className="flex items-center gap-2 flex-shrink-0">
                         <div className="flex flex-col items-center">
                           <span className="text-[9px] text-gray-400 mb-0.5">CS</span>
-                          <input
-                            type="number" min="0" max={max} value={cs}
-                            onChange={e => update(s._id, sub._id, 'classScore', e.target.value)}
-                            className={clsx('si', cs !== '' && parseFloat(cs) > max && 'over')}
-                          />
+                          {scoreInput(s, sub, 'classScore', maxFor(sub._id))}
                         </div>
                         <div className="flex flex-col items-center">
                           <span className="text-[9px] text-gray-400 mb-0.5">ES</span>
-                          <input
-                            type="number" min="0" max="100" value={es}
-                            onChange={e => update(s._id, sub._id, 'examScore', e.target.value)}
-                            className={clsx('si', es !== '' && parseFloat(es) > 100 && 'over')}
-                          />
+                          {scoreInput(s, sub, 'examScore', 100)}
                         </div>
                         <div className="flex flex-col items-center min-w-[36px]">
                           <span className="text-[9px] text-gray-400 mb-0.5">Total</span>
-                          <span className={clsx('text-xs font-bold', grade.cls)}>{tot === '—' ? '—' : `${tot}`}</span>
+                          <span className={clsx('text-xs font-bold', grade.cls)}>{tot}</span>
                           <span className={clsx('text-[10px]', grade.cls)}>{grade.g}</span>
                         </div>
                       </div>
@@ -214,11 +280,13 @@ export default function ScoresPage() {
                     </tr>
                     <tr>
                       <th className="px-2 py-1 bg-[#f0f4fb] border border-border sticky left-0 z-10" />
-                      {subjects.map(sub => (<>
-                        <th key={`${sub._id}-cs`} className="px-1 py-1 bg-[#f0f4fb] border border-border text-center text-[10px] text-gray-400 font-normal">CS/{maxMarks[sub._id] || '?'}</th>
-                        <th key={`${sub._id}-es`} className="px-1 py-1 bg-[#f0f4fb] border border-border text-center text-[10px] text-gray-400 font-normal">ES/100</th>
-                        <th key={`${sub._id}-tot`} className="px-1 py-1 bg-[#f0f4fb] border border-border text-center text-[10px] text-gray-400 font-normal">Tot/Grd</th>
-                      </>))}
+                      {subjects.map(sub => (
+                        <Fragment key={sub._id}>
+                          <th className="px-1 py-1 bg-[#f0f4fb] border border-border text-center text-[10px] text-gray-400 font-normal">CS/{maxFor(sub._id)}</th>
+                          <th className="px-1 py-1 bg-[#f0f4fb] border border-border text-center text-[10px] text-gray-400 font-normal">ES/100</th>
+                          <th className="px-1 py-1 bg-[#f0f4fb] border border-border text-center text-[10px] text-gray-400 font-normal">Tot/Grd</th>
+                        </Fragment>
+                      ))}
                     </tr>
                   </thead>
                   <tbody>
@@ -228,27 +296,22 @@ export default function ScoresPage() {
                           <span className="text-gray-400 mr-1">{i + 1}.</span>{s.fullName}
                         </td>
                         {subjects.map(sub => {
-                          const max = maxMarks[sub._id] || 100
-                          const cs = scores[s._id]?.[sub._id]?.classScore ?? ''
-                          const es = scores[s._id]?.[sub._id]?.examScore ?? ''
                           const tot = calcTotal(s._id, sub._id)
                           const grade = getGrade(tot)
-                          return (<>
-                            <td key={`${s._id}-${sub._id}-cs`} className="px-1 py-1 border border-[#f0f4fb] text-center">
-                              <input type="number" min="0" max={max} value={cs}
-                                onChange={e => update(s._id, sub._id, 'classScore', e.target.value)}
-                                className={clsx('si', cs !== '' && parseFloat(cs) > max && 'over')} />
-                            </td>
-                            <td key={`${s._id}-${sub._id}-es`} className="px-1 py-1 border border-[#f0f4fb] text-center">
-                              <input type="number" min="0" max="100" value={es}
-                                onChange={e => update(s._id, sub._id, 'examScore', e.target.value)}
-                                className={clsx('si', es !== '' && parseFloat(es) > 100 && 'over')} />
-                            </td>
-                            <td key={`${s._id}-${sub._id}-tot`} className="px-1 py-1 border border-[#f0f4fb] text-center">
-                              <span className={clsx('text-xs', grade.cls)}>{tot}</span>
-                              {grade.g !== '—' && <span className={clsx('ml-1 text-[10px] font-bold', grade.cls)}>{grade.g}</span>}
-                            </td>
-                          </>)
+                          return (
+                            <Fragment key={sub._id}>
+                              <td className="px-1 py-1 border border-[#f0f4fb] text-center">
+                                {scoreInput(s, sub, 'classScore', maxFor(sub._id))}
+                              </td>
+                              <td className="px-1 py-1 border border-[#f0f4fb] text-center">
+                                {scoreInput(s, sub, 'examScore', 100)}
+                              </td>
+                              <td className="px-1 py-1 border border-[#f0f4fb] text-center">
+                                <span className={clsx('text-xs', grade.cls)}>{tot}</span>
+                                {grade.g !== '—' && <span className={clsx('ml-1 text-[10px] font-bold', grade.cls)}>{grade.g}</span>}
+                              </td>
+                            </Fragment>
+                          )
                         })}
                       </tr>
                     ))}
@@ -259,7 +322,8 @@ export default function ScoresPage() {
           </div>
 
           {/* Save button — always visible */}
-          <div className="sticky bottom-4 flex justify-end">
+          <div className="sticky bottom-4 flex justify-end items-center gap-3">
+            {dirty && <span className="text-xs text-amber bg-amber-light px-2 py-1 rounded">Unsaved changes</span>}
             <Button variant="success" size="lg" onClick={saveAll} disabled={saving}
               className="shadow-lg shadow-green/30">
               <Save className="w-4 h-4" />

@@ -1,6 +1,7 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSchoolStore } from '@/store/schoolStore'
-import api from '@/lib/api'
+import { useAuthStore } from '@/store/authStore'
+import api, { errorMessage } from '@/lib/api'
 import { Card, SectionHeader, Button, Select, Table, Tr, Td, Badge, Spinner, EmptyState } from '@/components/ui'
 import { FileText, Printer, ChevronRight } from 'lucide-react'
 import toast from 'react-hot-toast'
@@ -24,10 +25,21 @@ function gradeInfo(total) {
   return { grade: '—', remark: '—' }
 }
 
+/** 1 → "1st", 2 → "2nd", 11 → "11th", 22 → "22nd", 113 → "113th" */
+function ordinal(n) {
+  const tens = n % 100
+  if (tens >= 11 && tens <= 13) return `${n}th`
+  return `${n}${{ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th'}`
+}
+
 export default function ReportsPage() {
+  const { user } = useAuthStore()
   const { classes, subjects, fetchClasses, fetchSubjects, settings } = useSchoolStore()
-  const [selectedClass, setSelectedClass] = useState('')
-  const [term, setTerm] = useState('1')
+  const isTeacher = user?.role === 'teacher'
+  const [pickedClass, setPickedClass] = useState('')
+  const selectedClass = isTeacher ? (user?.classId || '') : pickedClass
+  const [term, setTerm] = useState(settings?.term || '1')
+  const termTouched = useRef(false)
   const [students, setStudents] = useState([])
   const [allScores, setAllScores] = useState([])
   const [maxMarks, setMaxMarks] = useState({})
@@ -37,71 +49,91 @@ export default function ReportsPage() {
 
   useEffect(() => { fetchClasses(); fetchSubjects() }, [])
 
+  // Start on the school's current term once settings arrive (unless the user already picked one).
+  useEffect(() => {
+    if (settings?.term && !termTouched.current) setTerm(settings.term)
+  }, [settings?.term])
+
   useEffect(() => {
     if (!selectedClass) return
     setLoading(true)
     setSelectedStudent(null)
     Promise.all([
-      api.get(`/students?classId=${selectedClass}`),
+      api.get('/students', { params: { classId: selectedClass } }),
       api.get(`/scores/${selectedClass}/${term}`),
       api.get('/school/max-marks'),
     ]).then(([sRes, scRes, mRes]) => {
       setStudents(sRes.data)
       setAllScores(scRes.data)
       setMaxMarks(mRes.data)
-    }).catch(() => toast.error('Failed to load data'))
+    }).catch((err) => toast.error(errorMessage(err, 'Failed to load data')))
       .finally(() => setLoading(false))
   }, [selectedClass, term])
 
-  // Build per-student score rows
-  const buildReport = (student) => {
-    return subjects.map(sub => {
-      const entry = allScores.find(s => s.studentId === student._id && s.subjectId === sub._id)
-      const max = maxMarks[sub._id] || 100
-      const cs = parseFloat(entry?.classScore || 0)
-      const es = parseFloat(entry?.examScore || 0)
-      const csConverted = (cs / max) * 40
-      const esConverted = (es / 100) * 60
-      const total = csConverted + esConverted
-      const { grade, remark } = gradeInfo(total)
-      return { subject: sub.name, cs, es, csConverted, esConverted, total, grade, remark }
+  // Every student's subject rows, average and position — computed once per data change
+  // instead of once per table cell.
+  const reports = useMemo(() => {
+    const byKey = new Map(allScores.map(s => [`${s.studentId}|${s.subjectId}`, s]))
+    const list = students.map(student => {
+      const rows = subjects.map(sub => {
+        const entry = byKey.get(`${student._id}|${sub._id}`)
+        const max = maxMarks[sub._id] || 100
+        const cs = parseFloat(entry?.classScore || 0)
+        const es = parseFloat(entry?.examScore || 0)
+        const csConverted = (cs / max) * 40
+        const esConverted = (es / 100) * 60
+        const total = csConverted + esConverted
+        const { grade, remark } = gradeInfo(total)
+        return { subject: sub.name, cs, es, csConverted, esConverted, total, grade, remark }
+      })
+      const totalMark = rows.reduce((a, r) => a + r.total, 0)
+      const avg = rows.length ? totalMark / rows.length : 0
+      return { student, rows, totalMark, avg }
     })
-  }
+    // Standard competition ranking: equal averages share a position (1st, 2nd, 2nd, 4th).
+    const rounded = (r) => Math.round(r.avg * 10)
+    const sorted = [...list].sort((a, b) => b.avg - a.avg)
+    sorted.forEach((r, i) => {
+      r.position = i > 0 && rounded(r) === rounded(sorted[i - 1]) ? sorted[i - 1].position : i + 1
+    })
+    return new Map(list.map(r => [r.student._id, r]))
+  }, [students, subjects, allScores, maxMarks])
 
-  const classPosition = (student) => {
-    const getAvg = (s) => {
-      const rows = buildReport(s)
-      const sum = rows.reduce((acc, r) => acc + r.total, 0)
-      return rows.length ? sum / rows.length : 0
-    }
-    const sorted = [...students].sort((a, b) => getAvg(b) - getAvg(a))
-    const pos = sorted.findIndex(s => s._id === student._id) + 1
-    const suffix = pos === 1 ? 'st' : pos === 2 ? 'nd' : pos === 3 ? 'rd' : 'th'
-    return `${pos}${suffix}`
-  }
-
+  const changeTerm = (t) => { termTouched.current = true; setTerm(t) }
   const printReport = () => window.print()
 
-  const reportRows = selectedStudent ? buildReport(selectedStudent) : []
-  const totalMark = reportRows.reduce((a, r) => a + r.total, 0)
-  const avgMark = reportRows.length ? totalMark / reportRows.length : 0
+  const report = selectedStudent ? reports.get(selectedStudent._id) : null
+  const reportRows = report?.rows || []
+  const totalMark = report?.totalMark || 0
+  const avgMark = report?.avg || 0
+  const position = report ? ordinal(report.position) : '—'
+
+  if (isTeacher && !user?.classId) {
+    return (
+      <Card>
+        <EmptyState icon={FileText} title="No class assigned" description="Ask your school admin to assign you a class." />
+      </Card>
+    )
+  }
 
   return (
     <div>
-      <div className="mb-5">
+      <div className="mb-5 no-print">
         <h1 className="text-xl font-bold text-gray-900">Reports</h1>
         <p className="text-sm text-gray-400">Generate and print student report sheets</p>
       </div>
 
-      {/* Controls */}
-      <Card>
-        <SectionHeader title="Select Class & Term">
+      {/* Controls — hidden when printing, so only the report sheet prints */}
+      <Card className="no-print">
+        <SectionHeader title={settings?.academicYear ? `Select Class & Term · ${settings.academicYear}` : 'Select Class & Term'}>
           <div className="flex gap-2">
-            <Select className="w-44" value={selectedClass} onChange={e => setSelectedClass(e.target.value)}>
-              <option value="">Select class…</option>
-              {classes.map(c => <option key={c._id} value={c._id}>{c.name}</option>)}
-            </Select>
-            <Select className="w-32" value={term} onChange={e => setTerm(e.target.value)}>
+            {!isTeacher && (
+              <Select className="w-44" value={selectedClass} onChange={e => setPickedClass(e.target.value)}>
+                <option value="">Select class…</option>
+                {classes.map(c => <option key={c._id} value={c._id}>{c.name}</option>)}
+              </Select>
+            )}
+            <Select className="w-32" value={term} onChange={e => changeTerm(e.target.value)}>
               <option value="1">Term 1</option>
               <option value="2">Term 2</option>
               <option value="3">Term 3</option>
@@ -111,21 +143,22 @@ export default function ReportsPage() {
 
         {!selectedClass ? (
           <EmptyState icon={FileText} title="No class selected" description="Select a class to view student reports." />
-        ) : loading ? <Spinner /> : (
+        ) : loading ? <Spinner /> : students.length === 0 ? (
+          <EmptyState icon={FileText} title="No students in this class" description="Add students first." />
+        ) : (
           <Table headers={['#', 'Student', 'Avg %', 'Position', 'Action']}>
             {students.map((s, i) => {
-              const rows = buildReport(s)
-              const avg = rows.length ? rows.reduce((a, r) => a + r.total, 0) / rows.length : 0
-              const { grade } = gradeInfo(avg)
+              const r = reports.get(s._id)
+              const { grade } = gradeInfo(r.avg)
               return (
                 <Tr key={s._id}>
                   <Td className="text-gray-400">{i + 1}</Td>
                   <Td className="font-medium">{s.fullName}</Td>
                   <Td>
-                    <span className="font-bold">{avg.toFixed(1)}%</span>
-                    <Badge variant={avg >= 50 ? 'green' : 'red'} className="ml-2">{grade}</Badge>
+                    <span className="font-bold">{r.avg.toFixed(1)}%</span>
+                    <Badge variant={r.avg >= 50 ? 'green' : 'red'} className="ml-2">{grade}</Badge>
                   </Td>
-                  <Td className="text-gray-500">{classPosition(s)}</Td>
+                  <Td className="text-gray-500">{ordinal(r.position)}</Td>
                   <Td>
                     <Button size="sm" onClick={() => setSelectedStudent(s)}>
                       <ChevronRight className="w-3.5 h-3.5" /> View Report
@@ -162,7 +195,11 @@ export default function ReportsPage() {
                 {settings?.schoolName || 'SCHOOL NAME'}
               </h1>
               <div style={{ fontSize: '12px' }}>
-                {settings?.circuit} Circuit &mdash; {settings?.district} District &mdash; {settings?.region} Region
+                {[
+                  settings?.circuit && `${settings.circuit} Circuit`,
+                  settings?.district && `${settings.district} District`,
+                  settings?.region && `${settings.region} Region`,
+                ].filter(Boolean).join(' — ')}
               </div>
               <div style={{ fontSize: '13px', fontWeight: 'bold', marginTop: '6px' }}>STUDENT TERMINAL REPORT — TERM {term}</div>
             </div>
@@ -172,7 +209,11 @@ export default function ReportsPage() {
               {[
                 [`Student's Name: ${selectedStudent.fullName}`, `Class: ${classes.find(c => c._id === selectedClass)?.name || ''}`],
                 [`Academic Year: ${settings?.academicYear || ''}`, `Term: Term ${term}`],
-                [`Position: ${classPosition(selectedStudent)} out of ${students.length}`, `Total Students: ${students.length}`],
+                [`Position: ${position} out of ${students.length}`, `Total Students: ${students.length}`],
+                [
+                  `Next Term Begins: ${settings?.nextTermDate ? new Date(`${settings.nextTermDate}T00:00:00`).toLocaleDateString() : '—'}`,
+                  `Head Teacher: ${settings?.headTeacher || ''}`,
+                ],
               ].flat().map((t, i) => (
                 <span key={i} style={{ borderBottom: '0.5px solid #bbb', paddingBottom: '2px' }}>{t}</span>
               ))}
@@ -183,7 +224,7 @@ export default function ReportsPage() {
               {[
                 [totalMark.toFixed(1), 'Total Marks'],
                 [avgMark.toFixed(1) + '%', 'Average'],
-                [classPosition(selectedStudent), 'Position'],
+                [position, 'Position'],
                 [gradeInfo(avgMark).grade, 'Grade'],
                 [gradeInfo(avgMark).remark, 'Remark'],
               ].map(([val, lbl]) => (

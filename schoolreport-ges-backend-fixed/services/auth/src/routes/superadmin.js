@@ -1,134 +1,107 @@
 import { Router } from 'express'
-import User from '../models/User.js'
-import { School } from '../../../school/src/models/index.js'
+import { query, withTransaction } from '../../../../shared/db.js'
+import { ah, HttpError, isEmail, str, requiredStr, idParam } from '../../../../shared/http.js'
+import { schoolToApi, currentAcademicYear } from '../../../school/src/models/index.js'
 import { requireAuth, requireRole } from '../middleware/auth.js'
-import { sendWelcomeEmail } from '../utils/mailer.js'
+import { USER_COLUMNS, hashPassword, makeUsername, userToApi } from '../models/User.js'
+import { sendWelcomeEmail, emailConfigured } from '../utils/mailer.js'
 import { generateTempPassword } from '../utils/password.js'
 
 const router = Router()
 // Mounted at: /api/superadmin
+router.use(requireAuth, requireRole('superadmin'))
 
-/* ═══════════════════════════════════════════════════════
-   POST /api/superadmin/schools
-═══════════════════════════════════════════════════════ */
-router.post('/schools', requireAuth, requireRole('superadmin'), async (req, res) => {
-  const { schoolName, schoolEmail, adminName, adminEmail, circuit, district, region } = req.body
+/* POST /api/superadmin/schools — create a school and its first admin in one transaction */
+router.post('/schools', ah(async (req, res) => {
+  const b = req.body || {}
+  const schoolName  = requiredStr(b.schoolName, 'School name')
+  const schoolEmail = requiredStr(b.schoolEmail, 'School email').toLowerCase()
+  const adminName   = requiredStr(b.adminName, 'Admin name')
+  const adminEmail  = requiredStr(b.adminEmail, 'Admin email').toLowerCase()
+  const circuit     = str(b.circuit, 'Circuit')
+  const district    = str(b.district, 'District')
+  const region      = str(b.region, 'Region')
+  if (!isEmail(schoolEmail)) throw new HttpError(400, 'School email is not a valid email address.')
+  if (!isEmail(adminEmail))  throw new HttpError(400, 'Admin email is not a valid email address.')
 
-  // 1. Validate
-  if (!schoolName || !schoolEmail || !adminName || !adminEmail) {
-    return res.status(400).json({
-      message: 'schoolName, schoolEmail, adminName and adminEmail are all required.',
-    })
-  }
+  const [userExists, schoolExists] = await Promise.all([
+    query('SELECT 1 FROM users WHERE email = $1', [adminEmail]),
+    query('SELECT 1 FROM schools WHERE email = $1', [schoolEmail]),
+  ])
+  if (userExists.rowCount)   throw new HttpError(409, `A user with email "${adminEmail}" already exists.`)
+  if (schoolExists.rowCount) throw new HttpError(409, `A school with email "${schoolEmail}" already exists.`)
 
-  // 2. Duplicate checks
-  try {
-    const [userExists, schoolExists] = await Promise.all([
-      User.findOne({ email: adminEmail.toLowerCase() }),
-      School.findOne({ email: schoolEmail.toLowerCase() }),
-    ])
-    if (userExists) {
-      return res.status(409).json({ message: `A user with email "${adminEmail}" already exists.` })
-    }
-    if (schoolExists) {
-      return res.status(409).json({ message: `A school with email "${schoolEmail}" already exists.` })
-    }
-  } catch (err) {
-    console.error('[SuperAdmin] Duplicate-check error:', err.message)
-    return res.status(500).json({ message: 'Database lookup failed: ' + err.message })
-  }
-
-  // 3. Create school
-  let school
-  try {
-    school = await School.create({
-      name:     schoolName,
-      email:    schoolEmail.toLowerCase(),
-      circuit:  circuit  || '',
-      district: district || '',
-      region:   region   || '',
-    })
-  } catch (err) {
-    console.error('[SuperAdmin] School.create error:', err.message)
-    if (err.code === 11000) {
-      return res.status(409).json({ message: 'A school with that email already exists.' })
-    }
-    return res.status(500).json({ message: 'Failed to create school: ' + err.message })
-  }
-
-  // 4. Create admin user
-  let admin
   const tempPassword = generateTempPassword()
-  const emailPrefix  = adminEmail.toLowerCase().split('@')[0].replace(/[^a-z0-9]/g, '') || 'admin'
-  const username     = `${emailPrefix}_${school._id.toString().slice(-6)}`
+  const passwordHash = await hashPassword(tempPassword)
 
+  let school, admin
   try {
-    admin = await User.create({
-      fullName:           adminName,
-      email:              adminEmail.toLowerCase(),
-      username,
-      password:           tempPassword,
-      role:               'admin',
-      schoolId:           school._id,
-      mustChangePassword: true,
-    })
+    ({ school, admin } = await withTransaction(async (db) => {
+      const s = await db.query(
+        `INSERT INTO schools (name, email, circuit, district, region)
+         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+        [schoolName, schoolEmail, circuit, district, region]
+      )
+      await db.query(
+        `INSERT INTO school_settings (school_id, school_name, circuit, district, region, academic_year)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [s.rows[0].id, schoolName, circuit, district, region, currentAcademicYear()]
+      )
+      const u = await db.query(
+        `INSERT INTO users (full_name, email, username, password_hash, role, school_id, must_change_password)
+         VALUES ($1, $2, $3, $4, 'admin', $5, true)
+         RETURNING ${USER_COLUMNS}`,
+        [adminName, adminEmail, makeUsername(adminEmail), passwordHash, s.rows[0].id]
+      )
+      return { school: s.rows[0], admin: u.rows[0] }
+    }))
   } catch (err) {
-    // Rollback school if user creation fails
-    console.error('[SuperAdmin] User.create error:', err.message)
-    await School.findByIdAndDelete(school._id).catch(() => {})
-    if (err.code === 11000) {
-      return res.status(409).json({ message: 'A user with that email already exists.' })
+    // Someone created the same email between the check above and this insert.
+    if (err.code === '23505') {
+      throw new HttpError(409, err.constraint === 'schools_email_key'
+        ? `A school with email "${schoolEmail}" already exists.`
+        : `A user with email "${adminEmail}" already exists.`)
     }
-    return res.status(500).json({ message: 'Failed to create admin user: ' + err.message })
+    throw err
   }
 
-  // 5. Fire welcome email in background — does NOT block the response
+  // Sent in the background so a slow mail server never blocks this response.
   sendWelcomeEmail({
     to: adminEmail, fullName: adminName, email: adminEmail,
     tempPassword, role: 'admin', schoolName,
   })
 
-  // 6. Respond immediately with credentials
-  return res.status(201).json({
+  res.status(201).json({
     message: `School "${schoolName}" created successfully.`,
-    school,
-    admin,
+    school: schoolToApi(school),
+    admin: userToApi(admin),
+    emailQueued: emailConfigured(),
     credentials: {
       loginUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/login`,
-      email:     adminEmail,
-      password:  tempPassword,
-      note:      'A welcome email with these credentials has been sent to the admin.',
+      email: adminEmail,
+      password: tempPassword,
     },
   })
-})
+}))
 
-/* ═══════════════════════════════════════════════════════
-   GET /api/superadmin/schools
-═══════════════════════════════════════════════════════ */
-router.get('/schools', requireAuth, requireRole('superadmin'), async (req, res) => {
-  try {
-    const schools = await School.find().sort({ createdAt: -1 })
-    res.json(schools)
-  } catch (err) {
-    console.error('[SuperAdmin] GET schools error:', err.message)
-    res.status(500).json({ message: err.message })
-  }
-})
+/* GET /api/superadmin/schools */
+router.get('/schools', ah(async (req, res) => {
+  const { rows } = await query('SELECT * FROM schools ORDER BY created_at DESC')
+  res.json(rows.map(schoolToApi))
+}))
 
-/* ═══════════════════════════════════════════════════════
-   PUT /api/superadmin/schools/:id/toggle
-═══════════════════════════════════════════════════════ */
-router.put('/schools/:id/toggle', requireAuth, requireRole('superadmin'), async (req, res) => {
-  try {
-    const school = await School.findById(req.params.id)
-    if (!school) return res.status(404).json({ message: 'School not found.' })
-    school.isActive = !school.isActive
-    await school.save()
-    res.json({ message: `School ${school.isActive ? 'activated' : 'deactivated'}.`, school })
-  } catch (err) {
-    console.error('[SuperAdmin] Toggle error:', err.message)
-    res.status(500).json({ message: err.message })
-  }
-})
+/* PUT /api/superadmin/schools/:id/toggle — activate / deactivate a school */
+router.put('/schools/:id/toggle', ah(async (req, res) => {
+  const id = idParam(req.params.id, 'School')
+  const { rows } = await query(
+    'UPDATE schools SET is_active = NOT is_active WHERE id = $1 RETURNING *',
+    [id]
+  )
+  if (!rows[0]) throw new HttpError(404, 'School not found.')
+  res.json({
+    message: `School ${rows[0].is_active ? 'activated' : 'deactivated'}.`,
+    school: schoolToApi(rows[0]),
+  })
+}))
 
 export default router

@@ -55,15 +55,22 @@ export default function SuperAdminPage() {
     } finally { setSaving(false) }
   }
 
-  const copy = (text) => { navigator.clipboard.writeText(text); toast.success('Copied to clipboard!') }
+  const copy = async (text) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      toast.success('Copied to clipboard!')
+    } catch {
+      toast.error('Copy failed — select the text and copy it manually.')
+    }
+  }
 
   const toggle = async (id, name, isActive) => {
     if (!confirm(`${isActive ? 'Deactivate' : 'Activate'} "${name}"?`)) return
     try {
       const { data } = await api.put(`/superadmin/schools/${id}/toggle`)
       toast.success(data.message)
-      setSchools(ss => ss.map(s => s._id === id ? { ...s, isActive: !s.isActive } : s))
-    } catch { toast.error('Failed to update school') }
+      setSchools(ss => ss.map(s => s._id === id ? data.school : s))
+    } catch (e) { toast.error(e.response?.data?.message || 'Failed to update school') }
   }
 
   return (
@@ -155,16 +162,19 @@ export default function SuperAdminPage() {
           title="✅ School Created"
           footer={<Button variant="primary" onClick={() => { setCreated(null); setShowPw(false) }}>Done</Button>}>
 
-          {created.emailSent ? (
-            <div className="flex items-center gap-2 bg-green-light border border-green-200 rounded-xl px-4 py-3 mb-4">
-              <CheckCircle className="w-4 h-4 text-green flex-shrink-0"/>
-              <span className="text-sm text-green font-medium">Credentials emailed to <strong>{created.credentials.email}</strong></span>
+          {created.emailQueued ? (
+            <div className="flex items-start gap-2 bg-green-light border border-green-200 rounded-xl px-4 py-3 mb-4">
+              <CheckCircle className="w-4 h-4 text-green flex-shrink-0 mt-0.5"/>
+              <div>
+                <p className="text-sm text-green font-medium">Welcome email on its way to <strong>{created.credentials.email}</strong></p>
+                <p className="text-xs text-green mt-0.5">If it doesn't arrive in a few minutes (check spam), share the details below.</p>
+              </div>
             </div>
           ) : (
             <div className="flex items-start gap-2 bg-amber-light border border-[#FAC775] rounded-xl px-4 py-3 mb-4">
               <span className="text-lg flex-shrink-0">⚠️</span>
               <div>
-                <p className="text-sm text-amber font-bold">Email delivery failed</p>
+                <p className="text-sm text-amber font-bold">Email is not set up on the server</p>
                 <p className="text-xs text-amber mt-0.5">Share these credentials manually with the admin now.</p>
               </div>
             </div>

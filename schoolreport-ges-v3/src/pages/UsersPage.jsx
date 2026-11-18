@@ -1,16 +1,16 @@
 import { useEffect, useState } from 'react'
 import { useSchoolStore } from '@/store/schoolStore'
 import { useAuthStore } from '@/store/authStore'
-import api from '@/lib/api'
+import api, { errorMessage } from '@/lib/api'
 import { Card, SectionHeader, Button, Table, Tr, Td, Badge, Modal, Field, Input, Select, Textarea, Avatar, Spinner, EmptyState, Alert } from '@/components/ui'
-import { UserPlus, Users, Trash2, Pencil, RotateCcw, Lock } from 'lucide-react'
+import { UserPlus, Users, Trash2, Pencil, RotateCcw, Lock, Copy } from 'lucide-react'
 import toast from 'react-hot-toast'
 
 const ROLE_COLORS = { admin: 'blue', head: 'green', teacher: 'amber', student: 'gray' }
 const ROLE_LABELS = { admin: 'Admin', head: 'Head Teacher', teacher: 'Class Teacher', student: 'Student' }
 
 export default function UsersPage() {
-  const { classes, fetchClasses, settings } = useSchoolStore()
+  const { classes, fetchClasses } = useSchoolStore()
   const { user: currentUser } = useAuthStore()
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)
@@ -19,14 +19,21 @@ export default function UsersPage() {
   const [form, setForm] = useState({ fullName: '', email: '', role: 'teacher', classId: '', notes: '' })
   const [err, setErr] = useState('')
   const [saving, setSaving] = useState(false)
+  // Temporary credentials to show once (in case the email does not arrive).
+  const [issued, setIssued] = useState(null)
 
   useEffect(() => {
     fetchClasses()
     api.get('/users')
       .then(r => setUsers(r.data))
-      .catch(() => toast.error('Failed to load users'))
+      .catch((e) => toast.error(errorMessage(e, 'Failed to load users')))
       .finally(() => setLoading(false))
   }, [])
+
+  const copy = async (text) => {
+    try { await navigator.clipboard.writeText(text); toast.success('Copied!') }
+    catch { toast.error('Copy failed — select the text and copy it manually.') }
+  }
 
   const openAdd = () => {
     setEditUser(null)
@@ -55,40 +62,45 @@ export default function UsersPage() {
     if (error) return setErr(error)
     setSaving(true)
     try {
-      const payload = {
-        ...form,
-        schoolName: settings?.schoolName || 'Your School',
-      }
+      const payload = { ...form, fullName: form.fullName.trim(), email: form.email.trim() }
       if (editUser) {
+        delete payload.email // email can't be edited here
         const { data } = await api.put(`/users/${editUser._id}`, payload)
         setUsers(us => us.map(u => u._id === data._id ? data : u))
         toast.success('User updated')
       } else {
         const { data } = await api.post('/users', payload)
-        setUsers(us => [...us, data.user])
-        toast.success('User created. Credentials sent via email.')
+        setUsers(us => [data.user, ...us])
+        setIssued({ title: 'User Created', name: data.user.fullName, ...data.credentials })
       }
       setModal(false)
     } catch (e) {
-      setErr(e.response?.data?.message || 'Failed to save user.')
+      setErr(errorMessage(e, 'Failed to save user.'))
     } finally { setSaving(false) }
   }
 
-  const remove = async (id) => {
-    if (!confirm('Deactivate this user? They will no longer be able to log in.')) return
+  const setActive = async (u, isActive) => {
+    if (!isActive && !confirm(`Deactivate ${u.fullName}? They will no longer be able to log in.`)) return
     try {
-      await api.delete(`/users/${id}`)
-      setUsers(us => us.map(u => u._id === id ? { ...u, isActive: false } : u))
-      toast.success('User deactivated')
-    } catch { toast.error('Failed to deactivate user') }
+      let updated
+      if (isActive) {
+        updated = (await api.put(`/users/${u._id}`, { isActive: true })).data
+      } else {
+        await api.delete(`/users/${u._id}`)
+        updated = { ...u, isActive: false }
+      }
+      setUsers(us => us.map(x => x._id === u._id ? updated : x))
+      toast.success(isActive ? 'User reactivated' : 'User deactivated')
+    } catch (e) { toast.error(errorMessage(e, 'Failed to update user')) }
   }
 
   const resetPassword = async (u) => {
-    if (!confirm(`Reset password for ${u.fullName}? A new temporary password will be emailed to them.`)) return
+    if (!confirm(`Reset password for ${u.fullName}? They will get a new temporary password.`)) return
     try {
-      await api.post(`/users/${u._id}/reset-password`, { schoolName: settings?.schoolName || 'Your School' })
-      toast.success(`New credentials sent to ${u.email}`)
-    } catch { toast.error('Failed to reset password') }
+      const { data } = await api.post(`/users/${u._id}/reset-password`)
+      setUsers(us => us.map(x => x._id === u._id ? { ...x, mustChangePassword: true } : x))
+      setIssued({ title: 'Password Reset', name: u.fullName, ...data.credentials })
+    } catch (e) { toast.error(errorMessage(e, 'Failed to reset password')) }
   }
 
   return (
@@ -146,11 +158,15 @@ export default function UsersPage() {
                     <Button size="sm" variant="warn" onClick={() => resetPassword(u)} title="Reset password">
                       <RotateCcw className="w-3 h-3" />
                     </Button>
-                    {u._id !== currentUser?._id && (
-                      <Button size="sm" variant="danger" onClick={() => remove(u._id)} title="Deactivate">
+                    {u._id !== currentUser?._id && (u.isActive ? (
+                      <Button size="sm" variant="danger" onClick={() => setActive(u, false)} title="Deactivate">
                         <Trash2 className="w-3 h-3" />
                       </Button>
-                    )}
+                    ) : (
+                      <Button size="sm" variant="success" onClick={() => setActive(u, true)} title="Reactivate">
+                        Reactivate
+                      </Button>
+                    ))}
                   </div>
                 </Td>
               </Tr>
@@ -213,6 +229,34 @@ export default function UsersPage() {
           <div className="flex items-center gap-2 mt-2 text-red text-xs bg-red-light border border-red-200 rounded-lg px-3 py-2">
             <Lock className="w-3.5 h-3.5 flex-shrink-0" /> {err}
           </div>
+        )}
+      </Modal>
+
+      {/* Temporary credentials — shown once, in case the email does not arrive */}
+      <Modal open={!!issued} onClose={() => setIssued(null)} title={issued?.title || ''}
+        footer={<Button variant="primary" onClick={() => setIssued(null)}>Done</Button>}>
+        {issued && (
+          <>
+            <p className="text-sm text-gray-600 mb-3">
+              Temporary login for <strong>{issued.name}</strong>. It has also been emailed to them
+              if email is set up. They must change it when they first sign in.
+            </p>
+            <div className="bg-[#f4f6fb] rounded-xl p-4 mb-3 space-y-2">
+              {[['Email', issued.email], ['Temporary password', issued.password]].map(([label, value]) => (
+                <div key={label} className="flex items-center justify-between bg-white rounded-lg px-3 py-2.5 border border-border">
+                  <div className="min-w-0">
+                    <p className="text-[10px] text-gray-400 font-semibold uppercase">{label}</p>
+                    <p className="text-sm font-semibold text-gray-800 break-all font-mono">{value}</p>
+                  </div>
+                  <button onClick={() => copy(value)} title={`Copy ${label.toLowerCase()}`}
+                    className="p-1.5 rounded-lg hover:bg-blue-light text-gray-400 hover:text-blue transition-all ml-2 flex-shrink-0">
+                    <Copy className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <Alert variant="warn">🔒 This password is shown only once. Close this window when you've shared it.</Alert>
+          </>
         )}
       </Modal>
     </div>

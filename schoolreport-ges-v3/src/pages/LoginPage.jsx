@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { useAuthStore } from '@/store/authStore'
+import { useAuthStore, homePath } from '@/store/authStore'
 import { Shield, AlertCircle, Eye, EyeOff } from 'lucide-react'
 
 export default function LoginPage() {
@@ -16,7 +16,7 @@ export default function LoginPage() {
     if (!form.email || !form.password) { setError('Please enter your email and password.'); return }
     const result = await login(form.email, form.password)
     if (result.success) {
-      navigate(result.mustChangePassword ? '/change-password' : '/dashboard')
+      navigate(result.mustChangePassword ? '/change-password' : homePath(result.user))
     } else {
       setError(result.message)
     }

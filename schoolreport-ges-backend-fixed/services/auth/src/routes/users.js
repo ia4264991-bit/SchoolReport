@@ -1,136 +1,160 @@
 import { Router } from 'express'
-import User from '../models/User.js'
+import { query } from '../../../../shared/db.js'
+import { ah, HttpError, isEmail, isUuid, str, requiredStr, idParam } from '../../../../shared/http.js'
 import { requireAuth, requireRole } from '../middleware/auth.js'
+import { USER_COLUMNS, SCHOOL_ROLES, hashPassword, makeUsername, userToApi } from '../models/User.js'
 import { sendWelcomeEmail, sendAdminResetEmail } from '../utils/mailer.js'
 import { generateTempPassword } from '../utils/password.js'
 
 const router = Router()
 // Mounted at: /api/users
 
-/* GET /api/users */
-router.get('/', requireAuth, requireRole('admin', 'superadmin'), async (req, res) => {
-  try {
-    const filter = req.user.role === 'superadmin' ? {} : { schoolId: req.user.schoolId }
-    const users  = await User.find(filter).sort({ createdAt: -1 })
-    res.json(users)
-  } catch { res.status(500).json({ message: 'Server error.' }) }
-})
-
-/* POST /api/users */
-router.post('/', requireAuth, requireRole('admin'), async (req, res) => {
-  try {
-    const { fullName, email, role, classId, notes, schoolName } = req.body
-    if (!fullName || !email || !role)
-      return res.status(400).json({ message: 'fullName, email and role are required.' })
-
-    const validRoles = ['admin', 'head', 'teacher', 'student']
-    if (!validRoles.includes(role))
-      return res.status(400).json({ message: `Invalid role. Must be one of: ${validRoles.join(', ')}` })
-
-    const exists = await User.findOne({ email: email.toLowerCase() })
-    if (exists) return res.status(409).json({ message: 'A user with this email already exists.' })
-
-    const tempPassword = generateTempPassword()
-
-    // Build unique username: email prefix + last 6 chars of schoolId
-    const emailPrefix  = email.toLowerCase().split('@')[0].replace(/[^a-z0-9]/g, '')
-    const uniqueSuffix = req.user.schoolId?.toString().slice(-6) || Date.now().toString().slice(-6)
-    const username     = `${emailPrefix}_${uniqueSuffix}`
-
-    const user = await User.create({
-      fullName,
-      email:              email.toLowerCase(),
-      username,
-      password:           tempPassword,
-      role,
-      schoolId:           req.user.schoolId,
-      classId:            classId || null,
-      notes:              notes   || '',
-      mustChangePassword: true,
-    })
-
-    // Fire welcome email in background — does NOT block the response
-    sendWelcomeEmail({
-      to: email, fullName, email, tempPassword, role,
-      schoolName: schoolName || 'Your School',
-    })
-
-    res.status(201).json({
-      user,
-      credentials: {
-        email,
-        password: tempPassword,
-        note: 'A welcome email with these credentials has been sent.',
-      },
-      message: 'User created successfully.',
-    })
-  } catch (err) {
-    if (err.code === 11000) {
-      const field = Object.keys(err.keyPattern || {})[0] || 'field'
-      return res.status(409).json({
-        message: `A user with that ${field} already exists.`,
-      })
-    }
-    res.status(400).json({ message: err.message })
+function checkRole(role) {
+  if (!SCHOOL_ROLES.includes(role)) {
+    throw new HttpError(400, `Role must be one of: ${SCHOOL_ROLES.join(', ')}.`)
   }
-})
+  return role
+}
+
+/** '' / null → null; otherwise it must be a class in the admin's own school. */
+async function checkClassId(classId, schoolId) {
+  if (classId === undefined || classId === null || classId === '') return null
+  if (!isUuid(classId)) throw new HttpError(400, 'Assigned class not found.')
+  const { rowCount } = await query('SELECT 1 FROM classes WHERE id = $1 AND school_id = $2', [classId, schoolId])
+  if (!rowCount) throw new HttpError(400, 'Assigned class not found.')
+  return classId
+}
+
+async function schoolName(schoolId) {
+  const { rows } = await query('SELECT school_name FROM school_settings WHERE school_id = $1', [schoolId])
+  return rows[0]?.school_name || 'Your School'
+}
+
+/** Loads a user of the admin's school or answers 404. */
+async function findSchoolUser(req) {
+  const id = idParam(req.params.id, 'User')
+  const { rows } = await query(
+    `SELECT ${USER_COLUMNS} FROM users WHERE id = $1 AND school_id = $2`,
+    [id, req.user.schoolId]
+  )
+  if (!rows[0]) throw new HttpError(404, 'User not found in your school.')
+  return rows[0]
+}
+
+/* GET /api/users — admin: own school; superadmin: everyone */
+router.get('/', requireAuth, requireRole('admin', 'superadmin'), ah(async (req, res) => {
+  const { rows } = req.user.role === 'superadmin'
+    ? await query(`SELECT ${USER_COLUMNS} FROM users ORDER BY created_at DESC`)
+    : await query(`SELECT ${USER_COLUMNS} FROM users WHERE school_id = $1 ORDER BY created_at DESC`, [req.user.schoolId])
+  res.json(rows.map(userToApi))
+}))
+
+/* POST /api/users — create a staff/student login with an emailed temporary password */
+router.post('/', requireAuth, requireRole('admin'), ah(async (req, res) => {
+  const b = req.body || {}
+  const fullName = requiredStr(b.fullName, 'Full name')
+  const email = requiredStr(b.email, 'Email').toLowerCase()
+  if (!isEmail(email)) throw new HttpError(400, 'Enter a valid email address.')
+  const role = checkRole(b.role)
+  const classId = await checkClassId(b.classId, req.user.schoolId)
+  const notes = str(b.notes, 'Notes', { max: 1000 })
+
+  const tempPassword = generateTempPassword()
+  let user
+  try {
+    const { rows } = await query(
+      `INSERT INTO users (full_name, email, username, password_hash, role, school_id, class_id, notes, must_change_password)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true)
+       RETURNING ${USER_COLUMNS}`,
+      [fullName, email, makeUsername(email), await hashPassword(tempPassword), role, req.user.schoolId, classId, notes]
+    )
+    user = rows[0]
+  } catch (err) {
+    if (err.code === '23505') throw new HttpError(409, 'A user with this email already exists.')
+    throw err
+  }
+
+  sendWelcomeEmail({
+    to: email, fullName, email, tempPassword, role,
+    schoolName: await schoolName(req.user.schoolId),
+  })
+
+  res.status(201).json({
+    user: userToApi(user),
+    credentials: { email, password: tempPassword },
+    message: 'User created successfully.',
+  })
+}))
 
 /* PUT /api/users/:id */
-router.put('/:id', requireAuth, requireRole('admin'), async (req, res) => {
+router.put('/:id', requireAuth, requireRole('admin'), ah(async (req, res) => {
+  const target = await findSchoolUser(req)
+  const b = req.body || {}
+  const isSelf = target.id === req.user.id
+
+  const fields = {}
+  if (b.fullName !== undefined) fields.full_name = requiredStr(b.fullName, 'Full name')
+  if (b.email !== undefined) {
+    const email = requiredStr(b.email, 'Email').toLowerCase()
+    if (!isEmail(email)) throw new HttpError(400, 'Enter a valid email address.')
+    fields.email = email
+  }
+  if (b.role !== undefined && b.role !== target.role) {
+    if (isSelf) throw new HttpError(400, 'You cannot change your own role.')
+    fields.role = checkRole(b.role)
+  }
+  if (b.classId !== undefined) fields.class_id = await checkClassId(b.classId, req.user.schoolId)
+  if (b.notes !== undefined) fields.notes = str(b.notes, 'Notes', { max: 1000 })
+  if (typeof b.isActive === 'boolean' && b.isActive !== target.is_active) {
+    if (isSelf) throw new HttpError(400, 'You cannot deactivate your own account.')
+    fields.is_active = b.isActive
+  }
+
+  const cols = Object.keys(fields)
+  if (!cols.length) return res.json(userToApi(target))
+
   try {
-    const { fullName, email, role, classId, notes, isActive } = req.body
-    const user = await User.findOne({ _id: req.params.id, schoolId: req.user.schoolId })
-    if (!user) return res.status(404).json({ message: 'User not found in your school.' })
+    const { rows } = await query(
+      `UPDATE users SET ${cols.map((c, i) => `${c} = $${i + 3}`).join(', ')}
+        WHERE id = $1 AND school_id = $2
+        RETURNING ${USER_COLUMNS}`,
+      [target.id, req.user.schoolId, ...Object.values(fields)]
+    )
+    res.json(userToApi(rows[0]))
+  } catch (err) {
+    if (err.code === '23505') throw new HttpError(409, 'Another user already has this email.')
+    throw err
+  }
+}))
 
-    if (fullName)                      user.fullName = fullName
-    if (email)                         user.email    = email.toLowerCase()
-    if (role)                          user.role     = role
-    if (classId !== undefined)         user.classId  = classId || null
-    if (notes   !== undefined)         user.notes    = notes
-    if (typeof isActive === 'boolean') user.isActive = isActive
+/* DELETE /api/users/:id — deactivates (keeps the record) */
+router.delete('/:id', requireAuth, requireRole('admin'), ah(async (req, res) => {
+  const target = await findSchoolUser(req)
+  if (target.id === req.user.id) throw new HttpError(400, 'You cannot deactivate your own account.')
+  await query('UPDATE users SET is_active = false WHERE id = $1', [target.id])
+  res.json({ message: 'User deactivated.' })
+}))
 
-    await user.save()
-    res.json(user)
-  } catch (err) { res.status(400).json({ message: err.message }) }
-})
+/* POST /api/users/:id/reset-password — admin sets a new temporary password */
+router.post('/:id/reset-password', requireAuth, requireRole('admin'), ah(async (req, res) => {
+  const target = await findSchoolUser(req)
+  const newPassword = generateTempPassword()
+  await query(
+    `UPDATE users SET password_hash = $2, must_change_password = true,
+            otp_hash = NULL, otp_expires_at = NULL, otp_attempts = 0
+      WHERE id = $1`,
+    [target.id, await hashPassword(newPassword)]
+  )
 
-/* DELETE /api/users/:id */
-router.delete('/:id', requireAuth, requireRole('admin'), async (req, res) => {
-  try {
-    if (req.params.id === req.user.id)
-      return res.status(400).json({ message: 'You cannot delete your own account.' })
+  sendAdminResetEmail({
+    to: target.email, fullName: target.full_name,
+    newPassword, schoolName: await schoolName(req.user.schoolId),
+  })
 
-    const user = await User.findOne({ _id: req.params.id, schoolId: req.user.schoolId })
-    if (!user) return res.status(404).json({ message: 'User not found.' })
-    user.isActive = false
-    await user.save()
-    res.json({ message: 'User deactivated.' })
-  } catch (err) { res.status(500).json({ message: err.message }) }
-})
-
-/* POST /api/users/:id/reset-password */
-router.post('/:id/reset-password', requireAuth, requireRole('admin'), async (req, res) => {
-  try {
-    const { schoolName } = req.body
-    const user = await User.findOne({ _id: req.params.id, schoolId: req.user.schoolId })
-    if (!user) return res.status(404).json({ message: 'User not found.' })
-
-    const newPassword = generateTempPassword()
-    user.password           = newPassword
-    user.mustChangePassword = true
-    await user.save()
-
-    // Fire reset email in background
-    sendAdminResetEmail({
-      to: user.email, fullName: user.fullName,
-      newPassword, schoolName: schoolName || 'Your School',
-    })
-
-    res.json({
-      message: `Password reset for ${user.fullName}. New credentials sent to ${user.email}.`,
-      credentials: { email: user.email, password: newPassword },
-    })
-  } catch (err) { res.status(500).json({ message: err.message }) }
-})
+  res.json({
+    message: `Password reset for ${target.full_name}. New credentials sent to ${target.email}.`,
+    credentials: { email: target.email, password: newPassword },
+  })
+}))
 
 export default router

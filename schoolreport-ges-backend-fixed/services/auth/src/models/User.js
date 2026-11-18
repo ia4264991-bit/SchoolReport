@@ -1,43 +1,47 @@
-import mongoose from 'mongoose'
 import bcrypt from 'bcryptjs'
+import crypto from 'node:crypto'
 
-const userSchema = new mongoose.Schema({
-  fullName:           { type: String, required: true, trim: true },
-  email:              { type: String, required: true, unique: true, lowercase: true, trim: true },
-  username:           { type: String, unique: true, sparse: true, lowercase: true, trim: true },
-  password:           { type: String, required: true, minlength: 6 },
-  role: {
-    type: String,
-    enum: ['superadmin', 'admin', 'head', 'teacher', 'student'],
-    required: true,
-  },
-  schoolId:           { type: mongoose.Schema.Types.ObjectId, ref: 'School', default: null },
-  classId:            { type: String, default: null },
-  notes:              { type: String, default: '' },
-  isActive:           { type: Boolean, default: true },
-  mustChangePassword: { type: Boolean, default: false },
-  // OTP-based password reset
-  otpCode:            { type: String, default: null },
-  otpExpiry:          { type: Date,   default: null },
-}, { timestamps: true })
+/** Columns safe to send to the browser (no password or reset-code fields). */
+export const USER_COLUMNS = `id, full_name, email, username, role, school_id, class_id, notes,
+  is_active, must_change_password, created_at, updated_at`
 
-userSchema.pre('save', async function (next) {
-  if (!this.isModified('password')) return next()
-  this.password = await bcrypt.hash(this.password, 12)
-  next()
-})
+export const SCHOOL_ROLES = ['admin', 'head', 'teacher', 'student']
 
-userSchema.methods.comparePassword = function (candidate) {
-  return bcrypt.compare(candidate, this.password)
+export const PASSWORD_MIN = 8
+export const PASSWORD_MAX = 72 // bcrypt ignores anything past 72 bytes
+
+export const hashPassword = (pw) => bcrypt.hash(pw, 12)
+
+// Checked when the email is unknown, so a wrong email takes as long as a wrong password
+// and response times do not reveal which emails are registered.
+const DUMMY_HASH = '$2a$12$hlL8tkzG73Mq7U/43miYjO.x1M7ODziqwC9tl.dSNj8INwf8yAcSC'
+export const verifyPassword = (pw, hash) => bcrypt.compare(pw, hash || DUMMY_HASH)
+
+/** Password-reset codes are stored as an HMAC tied to the user, never in plain text. */
+export function hashOtp(userId, otp) {
+  return crypto.createHmac('sha256', process.env.JWT_SECRET).update(`${userId}:${otp}`).digest('hex')
 }
 
-userSchema.set('toJSON', {
-  transform: (_, obj) => {
-    delete obj.password
-    delete obj.otpCode
-    delete obj.otpExpiry
-    return obj
-  },
-})
+/** Unique, readable username. Logins use email; the username is only a display handle. */
+export function makeUsername(email) {
+  const prefix = email.split('@')[0].replace(/[^a-z0-9]/g, '').slice(0, 30) || 'user'
+  return `${prefix}_${crypto.randomBytes(3).toString('hex')}`
+}
 
-export default mongoose.model('User', userSchema)
+/** DB row → the JSON shape the frontend expects. */
+export function userToApi(row) {
+  return {
+    _id: row.id,
+    fullName: row.full_name,
+    email: row.email,
+    username: row.username,
+    role: row.role,
+    schoolId: row.school_id,
+    classId: row.class_id,
+    notes: row.notes,
+    isActive: row.is_active,
+    mustChangePassword: row.must_change_password,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}

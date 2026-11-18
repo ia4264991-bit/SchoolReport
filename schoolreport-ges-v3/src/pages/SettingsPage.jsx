@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react'
 import { useSchoolStore } from '@/store/schoolStore'
-import api from '@/lib/api'
+import { useAuthStore } from '@/store/authStore'
+import api, { errorMessage } from '@/lib/api'
 import { Card, SectionHeader, Button, Field, Input, Select, Table, Tr, Td, Modal, Spinner, Alert, PageHeader } from '@/components/ui'
 import { Save, Plus, Trash2, BookOpen, GraduationCap, Settings } from 'lucide-react'
 import toast from 'react-hot-toast'
 
 export default function SettingsPage() {
   const { settings, subjects, classes, fetchSettings, fetchSubjects, fetchClasses } = useSchoolStore()
+  const { user } = useAuthStore()
+  const canManageClasses = user?.role === 'admin' // the server allows only admins to change classes
   const [schoolForm, setSchoolForm] = useState({})
   const [savingSchool, setSavingSchool] = useState(false)
   const [marksModal, setMarksModal] = useState(false)
@@ -31,16 +34,17 @@ export default function SettingsPage() {
       await api.put('/school/settings', schoolForm)
       await fetchSettings()
       toast.success('School settings saved!')
-    } catch { toast.error('Failed to save settings') }
+    } catch (err) { toast.error(errorMessage(err, 'Failed to save settings')) }
     finally { setSavingSchool(false) }
   }
 
   const saveMaxMarks = async () => {
     try {
-      await api.put('/school/max-marks', maxMarks)
+      const { data } = await api.put('/school/max-marks', maxMarks)
+      setMaxMarks(data)
       toast.success('Max marks saved!')
       setMarksModal(false)
-    } catch { toast.error('Failed to save') }
+    } catch (err) { toast.error(errorMessage(err, 'Failed to save')) }
   }
 
   const saveSub = async () => {
@@ -50,14 +54,16 @@ export default function SettingsPage() {
       await fetchSubjects()
       setSubModal(false)
       toast.success(editSub ? 'Subject updated' : 'Subject added')
-    } catch { toast.error('Failed to save subject') }
+    } catch (err) { toast.error(errorMessage(err, 'Failed to save subject')) }
   }
 
-  const deleteSub = async (id) => {
-    if (!confirm('Delete this subject?')) return
-    await api.delete(`/school/subjects/${id}`)
-    await fetchSubjects()
-    toast.success('Subject deleted')
+  const deleteSub = async (sub) => {
+    if (!confirm(`Delete "${sub.name}"? All scores entered for this subject are deleted too.`)) return
+    try {
+      await api.delete(`/school/subjects/${sub._id}`)
+      await fetchSubjects()
+      toast.success('Subject deleted')
+    } catch (err) { toast.error(errorMessage(err, 'Failed to delete subject')) }
   }
 
   const saveCls = async () => {
@@ -67,14 +73,16 @@ export default function SettingsPage() {
       await fetchClasses()
       setClsModal(false)
       toast.success(editCls ? 'Class updated' : 'Class added')
-    } catch { toast.error('Failed to save class') }
+    } catch (err) { toast.error(errorMessage(err, 'Failed to save class')) }
   }
 
-  const deleteCls = async (id) => {
-    if (!confirm('Delete this class?')) return
-    await api.delete(`/school/classes/${id}`)
-    await fetchClasses()
-    toast.success('Class deleted')
+  const deleteCls = async (cls) => {
+    if (!confirm(`Delete "${cls.name}"?`)) return
+    try {
+      await api.delete(`/school/classes/${cls._id}`)
+      await fetchClasses()
+      toast.success('Class deleted')
+    } catch (err) { toast.error(errorMessage(err, 'Failed to delete class')) }
   }
 
   const schoolFields = [
@@ -142,7 +150,7 @@ export default function SettingsPage() {
                   <Button size="sm" onClick={() => { setEditSub(sub); setSubForm({ name: sub.name, code: sub.code || '' }); setSubModal(true) }}>
                     <BookOpen className="w-3 h-3" />
                   </Button>
-                  <Button size="sm" variant="danger" onClick={() => deleteSub(sub._id)}>
+                  <Button size="sm" variant="danger" onClick={() => deleteSub(sub)}>
                     <Trash2 className="w-3 h-3" />
                   </Button>
                 </div>
@@ -155,26 +163,31 @@ export default function SettingsPage() {
       {/* Classes */}
       <Card>
         <SectionHeader title="🏫 Classes">
-          <Button size="sm" variant="primary" onClick={() => { setEditCls(null); setClsForm({ name: '', level: '' }); setClsModal(true) }}>
-            <Plus className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Add Class</span>
-            <span className="sm:hidden">Add</span>
-          </Button>
+          {canManageClasses && (
+            <Button size="sm" variant="primary" onClick={() => { setEditCls(null); setClsForm({ name: '', level: '' }); setClsModal(true) }}>
+              <Plus className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Add Class</span>
+              <span className="sm:hidden">Add</span>
+            </Button>
+          )}
         </SectionHeader>
-        <Table headers={['Class Name', 'Level', '']}>
+        <Table headers={['Class Name', 'Level', 'Students', '']}>
           {classes.map(cls => (
             <Tr key={cls._id}>
               <Td className="font-medium text-sm">{cls.name}</Td>
               <Td className="text-gray-400 text-sm">{cls.level || '—'}</Td>
+              <Td className="text-gray-500 text-sm">{cls.studentCount ?? 0}</Td>
               <Td>
-                <div className="flex gap-1.5 justify-end">
-                  <Button size="sm" onClick={() => { setEditCls(cls); setClsForm({ name: cls.name, level: cls.level || '' }); setClsModal(true) }}>
-                    <GraduationCap className="w-3 h-3" />
-                  </Button>
-                  <Button size="sm" variant="danger" onClick={() => deleteCls(cls._id)}>
-                    <Trash2 className="w-3 h-3" />
-                  </Button>
-                </div>
+                {canManageClasses && (
+                  <div className="flex gap-1.5 justify-end">
+                    <Button size="sm" title="Edit class" onClick={() => { setEditCls(cls); setClsForm({ name: cls.name, level: cls.level || '' }); setClsModal(true) }}>
+                      <GraduationCap className="w-3 h-3" />
+                    </Button>
+                    <Button size="sm" variant="danger" title="Delete class" onClick={() => deleteCls(cls)}>
+                      <Trash2 className="w-3 h-3" />
+                    </Button>
+                  </div>
+                )}
               </Td>
             </Tr>
           ))}

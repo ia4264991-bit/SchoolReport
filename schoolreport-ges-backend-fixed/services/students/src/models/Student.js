@@ -1,15 +1,16 @@
-import mongoose from 'mongoose'
+export const GENDERS = ['M', 'F']
 
-const studentSchema = new mongoose.Schema({
-  schoolId:    { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true },
-  fullName:    { type: String, required: true, trim: true },
-  gender:      { type: String, enum: ['M', 'F'], required: true },
-  dateOfBirth: { type: Date, default: null },
-  classId:     { type: String, required: true },
-  isActive:    { type: Boolean, default: true },
-}, { timestamps: true })
-
-studentSchema.index({ schoolId: 1 })
-studentSchema.index({ schoolId: 1, classId: 1 })
-
-export default mongoose.model('Student', studentSchema)
+/** DB row → the JSON shape the frontend expects. */
+export function studentToApi(r) {
+  return {
+    _id: r.id,
+    schoolId: r.school_id,
+    classId: r.class_id,
+    fullName: r.full_name,
+    gender: r.gender,
+    dateOfBirth: r.date_of_birth, // 'YYYY-MM-DD' or null
+    isActive: r.is_active,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  }
+}

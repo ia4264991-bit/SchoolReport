@@ -9,7 +9,7 @@ import { GraduationCap, Users, BookOpen, FileText, ChevronRight } from 'lucide-r
 const quickLinks = [
   { icon: Users,         label: 'Manage Students',  path: '/students', roles: ['admin','head','teacher'] },
   { icon: BookOpen,      label: 'Enter Scores',      path: '/scores',   roles: ['admin','head','teacher'] },
-  { icon: FileText,      label: 'View Reports',      path: '/reports',  roles: ['admin','head','teacher','student'] },
+  { icon: FileText,      label: 'View Reports',      path: '/reports',  roles: ['admin','head','teacher'] },
   { icon: GraduationCap, label: 'Manage Classes',    path: '/classes',  roles: ['admin','head'] },
 ]
 
@@ -37,7 +37,7 @@ export default function DashboardPage() {
     <div>
       <PageHeader
         title={`${greeting()}, ${firstName} 👋`}
-        subtitle={`${settings?.schoolName || 'SchoolReport GES'} · Term ${settings?.term || '1'}, ${settings?.academicYear || '2024/2025'}`}
+        subtitle={[settings?.schoolName || 'SchoolReport GES', settings && `Term ${settings.term}, ${settings.academicYear}`].filter(Boolean).join(' · ')}
       />
 
       {user?.role === 'teacher' && (
@@ -46,12 +46,18 @@ export default function DashboardPage() {
         </Alert>
       )}
 
+      {user?.role === 'teacher' && !user.classId && (
+        <Alert variant="warn">
+          You have no class assigned yet. Ask your school admin to assign you a class in User Mgmt.
+        </Alert>
+      )}
+
       {/* Metrics */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
         <Metric icon={GraduationCap} value={stats?.totalClasses ?? '—'} label="Classes" color="blue" />
         <Metric icon={Users}         value={stats?.totalStudents ?? '—'} label="Students" color="green" />
         <Metric icon={BookOpen}      value={stats?.subjectsCount ?? '—'} label="Subjects" color="amber" />
-        <Metric icon={FileText}      value={stats?.reportsGenerated ?? '—'} label="Reports Ready" color="blue" />
+        <Metric icon={FileText}      value={stats?.reportsGenerated ?? '—'} label="Students Scored This Term" color="blue" />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

@@ -18,12 +18,18 @@ export function generateTempPassword(length = 10) {
   pw += special[crypto.randomInt(special.length)]
   for (let i = 4; i < length; i++) pw += all[crypto.randomInt(all.length)]
 
-  return pw.split('').sort(() => crypto.randomInt(3) - 1).join('')
+  // Fisher–Yates shuffle (sorting with a random comparator gives a biased order)
+  const chars = pw.split('')
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = crypto.randomInt(i + 1)
+    ;[chars[i], chars[j]] = [chars[j], chars[i]]
+  }
+  return chars.join('')
 }
 
 /**
  * Generates a 6-digit numeric OTP for password reset
  */
 export function generateOTP() {
-  return String(crypto.randomInt(100000, 999999))
+  return String(crypto.randomInt(100000, 1000000))
 }

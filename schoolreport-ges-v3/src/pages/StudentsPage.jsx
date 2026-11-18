@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useAuthStore } from '@/store/authStore'
 import { useSchoolStore } from '@/store/schoolStore'
-import api from '@/lib/api'
+import api, { errorMessage } from '@/lib/api'
 import { Card, SectionHeader, Button, Table, Tr, Td, Badge, Modal, Field, Input, Select, Spinner, EmptyState, Avatar, PageHeader } from '@/components/ui'
 import { UserPlus, Users, Trash2, Pencil } from 'lucide-react'
 import toast from 'react-hot-toast'
@@ -9,9 +10,17 @@ import toast from 'react-hot-toast'
 export default function StudentsPage() {
   const { user } = useAuthStore()
   const { classes, fetchClasses } = useSchoolStore()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const isTeacher = user?.role === 'teacher'
+  const canDelete = user?.role === 'admin' || user?.role === 'head'
+
+  // Teachers always work in their own class; others can arrive with ?classId= from the Classes page.
+  const selectedClass = isTeacher ? (user?.classId || '') : (searchParams.get('classId') || '')
+  const setSelectedClass = (id) => setSearchParams(id ? { classId: id } : {}, { replace: true })
+
   const [students, setStudents] = useState([])
-  const [selectedClass, setSelectedClass] = useState('')
   const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
   const [modal, setModal] = useState(false)
   const [editStudent, setEditStudent] = useState(null)
   const [form, setForm] = useState({ fullName: '', gender: 'M', dateOfBirth: '', classId: '' })
@@ -19,15 +28,11 @@ export default function StudentsPage() {
   useEffect(() => { fetchClasses() }, [])
 
   useEffect(() => {
-    if (user?.role === 'teacher' && user.classId) setSelectedClass(user.classId)
-  }, [user])
-
-  useEffect(() => {
-    if (!selectedClass) return
+    if (!selectedClass) { setStudents([]); return }
     setLoading(true)
-    api.get(`/students?classId=${selectedClass}`)
+    api.get('/students', { params: { classId: selectedClass } })
       .then(r => setStudents(r.data))
-      .catch(() => toast.error('Failed to load students'))
+      .catch((err) => toast.error(errorMessage(err, 'Failed to load students')))
       .finally(() => setLoading(false))
   }, [selectedClass])
 
@@ -45,27 +50,53 @@ export default function StudentsPage() {
 
   const save = async () => {
     if (!form.fullName.trim()) return toast.error('Name is required')
+    if (!isTeacher && !form.classId) return toast.error('Please choose a class')
+    const payload = { ...form, fullName: form.fullName.trim() }
+    if (isTeacher) delete payload.classId // the server always uses the teacher's own class
+    setSaving(true)
     try {
       if (editStudent) {
-        const { data } = await api.put(`/students/${editStudent._id}`, form)
-        setStudents(ss => ss.map(s => s._id === data._id ? data : s))
+        const { data } = await api.put(`/students/${editStudent._id}`, payload)
+        // Moved to another class → it no longer belongs in this list.
+        setStudents(ss => data.classId === selectedClass
+          ? ss.map(s => s._id === data._id ? data : s)
+          : ss.filter(s => s._id !== data._id))
         toast.success('Student updated')
       } else {
-        const { data } = await api.post('/students', { ...form, classId: selectedClass })
-        setStudents(ss => [...ss, data])
+        const { data } = await api.post('/students', payload)
+        if (data.classId === selectedClass) {
+          setStudents(ss => [...ss, data].sort((a, b) => a.fullName.localeCompare(b.fullName)))
+        }
         toast.success('Student added')
       }
       setModal(false)
-    } catch { toast.error('Failed to save student') }
+    } catch (err) {
+      toast.error(errorMessage(err, 'Failed to save student'))
+    } finally {
+      setSaving(false)
+    }
   }
 
-  const remove = async (id) => {
-    if (!confirm('Remove this student?')) return
+  const remove = async (s) => {
+    if (!confirm(`Remove ${s.fullName}? Their saved scores are kept.`)) return
     try {
-      await api.delete(`/students/${id}`)
-      setStudents(ss => ss.filter(s => s._id !== id))
+      await api.delete(`/students/${s._id}`)
+      setStudents(ss => ss.filter(x => x._id !== s._id))
       toast.success('Student removed')
-    } catch { toast.error('Failed to remove') }
+    } catch (err) {
+      toast.error(errorMessage(err, 'Failed to remove'))
+    }
+  }
+
+  if (isTeacher && !user?.classId) {
+    return (
+      <div>
+        <PageHeader title="Students" subtitle="Manage student roster by class" />
+        <Card>
+          <EmptyState icon={Users} title="No class assigned" description="Ask your school admin to assign you a class." />
+        </Card>
+      </div>
+    )
   }
 
   return (
@@ -74,7 +105,7 @@ export default function StudentsPage() {
 
       <Card>
         <SectionHeader title={`Students (${students.length})`}>
-          {user?.role !== 'teacher' && (
+          {!isTeacher && (
             <Select className="w-40 sm:w-44" value={selectedClass} onChange={e => setSelectedClass(e.target.value)}>
               <option value="">Select class…</option>
               {classes.map(c => <option key={c._id} value={c._id}>{c.name}</option>)}
@@ -87,7 +118,9 @@ export default function StudentsPage() {
           </Button>
         </SectionHeader>
 
-        {loading ? <Spinner /> : students.length === 0 ? (
+        {!selectedClass ? (
+          <EmptyState icon={Users} title="No class selected" description="Select a class above to see its students." />
+        ) : loading ? <Spinner /> : students.length === 0 ? (
           <EmptyState icon={Users} title="No students yet" description="Add students to this class to get started." />
         ) : (
           <Table headers={['#', 'Name', 'Gender', 'DOB', '']}>
@@ -106,12 +139,15 @@ export default function StudentsPage() {
                   </Badge>
                 </Td>
                 <Td className="text-gray-400 text-xs hidden sm:table-cell">
-                  {s.dateOfBirth ? new Date(s.dateOfBirth).toLocaleDateString() : '—'}
+                  {/* dateOfBirth is 'YYYY-MM-DD'; read it as a local date so the day doesn't shift */}
+                  {s.dateOfBirth ? new Date(`${s.dateOfBirth}T00:00:00`).toLocaleDateString() : '—'}
                 </Td>
                 <Td>
                   <div className="flex gap-1.5 justify-end">
-                    <Button size="sm" onClick={() => openEdit(s)}><Pencil className="w-3 h-3" /></Button>
-                    <Button size="sm" variant="danger" onClick={() => remove(s._id)}><Trash2 className="w-3 h-3" /></Button>
+                    <Button size="sm" onClick={() => openEdit(s)} title="Edit"><Pencil className="w-3 h-3" /></Button>
+                    {canDelete && (
+                      <Button size="sm" variant="danger" onClick={() => remove(s)} title="Remove"><Trash2 className="w-3 h-3" /></Button>
+                    )}
                   </div>
                 </Td>
               </Tr>
@@ -124,7 +160,7 @@ export default function StudentsPage() {
         title={editStudent ? 'Edit Student' : 'Add Student'}
         footer={<>
           <Button onClick={() => setModal(false)}>Cancel</Button>
-          <Button variant="primary" onClick={save}>Save Student</Button>
+          <Button variant="primary" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save Student'}</Button>
         </>}
       >
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3">
@@ -142,7 +178,7 @@ export default function StudentsPage() {
           <Field label="Date of Birth">
             <Input type="date" value={form.dateOfBirth} onChange={e => setForm(f => ({ ...f, dateOfBirth: e.target.value }))} />
           </Field>
-          {user?.role !== 'teacher' && (
+          {!isTeacher && (
             <div className="sm:col-span-2">
               <Field label="Class">
                 <Select value={form.classId} onChange={e => setForm(f => ({ ...f, classId: e.target.value }))}>

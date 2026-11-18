@@ -31,8 +31,12 @@ export default function App() {
         <Route path="/superadmin" element={
           <ProtectedRoute roles={['superadmin']}><SuperAdminPage /></ProtectedRoute>
         } />
-        <Route path="/dashboard" element={<DashboardPage />} />
-        <Route path="/reports"   element={<ReportsPage />} />
+        <Route path="/dashboard" element={
+          <ProtectedRoute roles={['admin','head','teacher','student']}><DashboardPage /></ProtectedRoute>
+        } />
+        <Route path="/reports" element={
+          <ProtectedRoute roles={['admin','head','teacher']}><ReportsPage /></ProtectedRoute>
+        } />
         <Route path="/classes" element={
           <ProtectedRoute roles={['admin','head']}><ClassesPage /></ProtectedRoute>
         } />

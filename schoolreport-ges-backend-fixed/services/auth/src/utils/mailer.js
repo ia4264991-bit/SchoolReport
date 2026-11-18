@@ -1,5 +1,14 @@
 import nodemailer from 'nodemailer'
 
+/** True when SMTP credentials are set, i.e. emails can actually be sent. */
+export function emailConfigured() {
+  return Boolean(process.env.SMTP_USER && process.env.SMTP_PASS)
+}
+
+// Names and school names are typed by users; escape them before putting them in HTML.
+const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ESC[c])
+
 // ─── Create transporter — reads env vars at call time ─────────────
 function makeTransporter() {
   return nodemailer.createTransport({
@@ -32,6 +41,10 @@ async function _send({ to, subject, html }) {
 // ─── Fire and forget — sends in background, never blocks caller ───
 // Returns immediately. Logs success/failure to console only.
 function _sendBackground(args) {
+  if (!emailConfigured()) {
+    console.warn(`[Mailer] SMTP_USER/SMTP_PASS not set — skipped "${args.subject}" to ${args.to}`)
+    return
+  }
   _send(args)
     .then(() => console.log(`[Mailer] ✉  Background send OK → ${args.to}`))
     .catch(err => console.error(`[Mailer] ✗ Background send FAILED → ${args.to} :`, err.message))
@@ -41,12 +54,15 @@ function _sendBackground(args) {
    WELCOME — new user credentials
    Fires in background. Never blocks the HTTP response.
 ═══════════════════════════════════════════════════════════════ */
-export function sendWelcomeEmail({ to, fullName, email, tempPassword, role, schoolName }) {
+export function sendWelcomeEmail({ to, fullName, email, tempPassword, role, schoolName: rawSchoolName }) {
   const BASE = process.env.FRONTEND_URL || 'http://localhost:5173'
+  const subject = `Your ${rawSchoolName} Account — Login Credentials`
+  ;[fullName, email, tempPassword, role] = [fullName, email, tempPassword, role].map(esc)
+  const schoolName = esc(rawSchoolName)
 
   _sendBackground({
     to,
-    subject: `Your ${schoolName} Account — Login Credentials`,
+    subject,
     html: `
     <div style="font-family:Segoe UI,Arial,sans-serif;max-width:560px;margin:0 auto;border:1px solid #e3e8f0;border-radius:14px;overflow:hidden;">
       <div style="background:#185FA5;padding:24px 28px;text-align:center;">
@@ -107,6 +123,7 @@ export function sendWelcomeEmail({ to, fullName, email, tempPassword, role, scho
    Fires in background.
 ═══════════════════════════════════════════════════════════════ */
 export function sendOTPEmail({ to, fullName, otp }) {
+  fullName = esc(fullName)
   _sendBackground({
     to,
     subject: `${otp} — Your SchoolReport GES Reset Code`,
@@ -143,12 +160,15 @@ export function sendOTPEmail({ to, fullName, otp }) {
    ADMIN RESET — admin force-resets a user's password
    Fires in background.
 ═══════════════════════════════════════════════════════════════ */
-export function sendAdminResetEmail({ to, fullName, newPassword, schoolName }) {
+export function sendAdminResetEmail({ to, fullName, newPassword, schoolName: rawSchoolName }) {
   const BASE = process.env.FRONTEND_URL || 'http://localhost:5173'
+  const subject = `Password Reset — ${rawSchoolName}`
+  ;[fullName, newPassword] = [fullName, newPassword].map(esc)
+  const schoolName = esc(rawSchoolName)
 
   _sendBackground({
     to,
-    subject: `Password Reset — ${schoolName}`,
+    subject,
     html: `
     <div style="font-family:Segoe UI,Arial,sans-serif;max-width:480px;margin:0 auto;border:1px solid #e3e8f0;border-radius:14px;overflow:hidden;">
       <div style="background:#185FA5;padding:20px 28px;text-align:center;">
