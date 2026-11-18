@@ -85,10 +85,22 @@ Parameters:
     Type: String
     Default: ''
     Description: Optional. CloudFront WAF web ACL ARN (created in us-east-1 by infra/aws/waf.sh).
+  DomainName:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[a-z0-9-]+(\.[a-z0-9-]+)+$'
+    Description: Optional. The school system's own domain (e.g. schoolreport.online); its DNS is hosted in Route 53.
+  ApiCertificateArn:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^arn:aws:acm:us-east-1:[0-9]{12}:certificate/[0-9a-f-]+$'
+    Description: Optional. ISSUED ACM certificate (us-east-1) for api.<DomainName>; puts the API on that address.
 
 Conditions:
   HasSmtp: !Not [!Equals [!Ref SmtpSecretArn, '']]
   HasWebAcl: !Not [!Equals [!Ref WebAclArn, '']]
+  HasDomain: !Not [!Equals [!Ref DomainName, '']]
+  HasApiDomain: !And [!Condition HasDomain, !Not [!Equals [!Ref ApiCertificateArn, '']]]
 
 Resources:
   # ── Network ──────────────────────────────────────────────────────────────
@@ -501,6 +513,13 @@ Resources:
         IPV6Enabled: true
         PriceClass: PriceClass_All
         WebACLId: !If [HasWebAcl, !Ref WebAclArn, !Ref AWS::NoValue]
+        Aliases: !If [HasApiDomain, [!Sub 'api.${DomainName}'], !Ref AWS::NoValue]
+        ViewerCertificate: !If
+          - HasApiDomain
+          - AcmCertificateArn: !Ref ApiCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - !Ref AWS::NoValue
         Origins:
           - Id: api
             DomainName: !Join ['', ['ec2-', !Join ['-', !Split ['.', !Ref ApiServerIp]], '.', !Ref 'AWS::Region', '.compute.amazonaws.com']]
@@ -520,6 +539,46 @@ Resources:
           Compress: true
           CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad          # Managed-CachingDisabled
           OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac  # Managed-AllViewerExceptHostHeader
+
+  # ── Domain DNS ───────────────────────────────────────────────────────────
+  HostedZone:
+    Type: AWS::Route53::HostedZone
+    Condition: HasDomain
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: DNS for the own domain lives in AWS so certificate, API alias and SES records can be managed here; registrar (Namecheap) only points its nameservers at this zone
+        must:
+          - registrar nameservers must equal this zone's NameServers output, else nothing resolves
+          - replacing the zone gives NEW nameservers -> registrar must be updated again
+        mutable: must-never-change
+    Properties:
+      Name: !Ref DomainName
+      HostedZoneConfig:
+        Comment: !Sub 'SchoolReport ${EnvName}'
+
+  ApiAliasIPv4:
+    Type: AWS::Route53::RecordSet
+    Condition: HasApiDomain
+    Properties:
+      HostedZoneId: !Ref HostedZone
+      Name: !Sub 'api.${DomainName}.'
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt Distribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2   # fixed zone id AWS uses for every CloudFront alias
+
+  ApiAliasIPv6:
+    Type: AWS::Route53::RecordSet
+    Condition: HasApiDomain
+    Properties:
+      HostedZoneId: !Ref HostedZone
+      Name: !Sub 'api.${DomainName}.'
+      Type: AAAA
+      AliasTarget:
+        DNSName: !GetAtt Distribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
 
   # ── Patching ─────────────────────────────────────────────────────────────
   WeeklyPatching:
@@ -653,6 +712,9 @@ Resources:
 Outputs:
   ApiUrl:
     Description: HTTPS address of the API. On Vercel set VITE_API_URL to this value + /api.
+    Value: !If [HasApiDomain, !Sub 'https://api.${DomainName}', !Sub 'https://${Distribution.DomainName}']
+  CloudFrontUrl:
+    Description: The CloudFront address (works even without the own domain).
     Value: !Sub 'https://${Distribution.DomainName}'
   InstanceId:
     Description: API server (open a shell with aws ssm start-session).
@@ -672,3 +734,11 @@ Outputs:
   DatabaseEndpoint:
     Description: PostgreSQL address (private; reachable only from the API server).
     Value: !GetAtt Database.Endpoint.Address
+  HostedZoneId:
+    Condition: HasDomain
+    Description: Route 53 zone of the own domain.
+    Value: !Ref HostedZone
+  NameServers:
+    Condition: HasDomain
+    Description: Set these 4 as "Custom DNS" nameservers at the registrar (Namecheap).
+    Value: !Join [', ', !GetAtt HostedZone.NameServers]
