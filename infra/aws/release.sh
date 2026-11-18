@@ -19,7 +19,10 @@ out() { "${AWS[@]}" cloudformation describe-stacks --stack-name "$STACK" \
   --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text; }
 BUCKET=$(out ArtifactsBucketName)
 INSTANCE=$(out InstanceId)
-API=$(out ApiUrl)
+# Check through the CloudFront address: it always resolves, even when a local DNS cache
+# hasn't caught up with the custom domain yet.
+API=$(out CloudFrontUrl)
+[ -n "$API" ] && [ "$API" != None ] || API=$(out ApiUrl)
 
 if [ $# -ge 1 ]; then
   RELEASE="$1"
