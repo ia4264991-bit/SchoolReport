@@ -58,3 +58,8 @@ Thumbs.db
 # =========================
 coverage/
 *.local
+# =========================
+# DEPLOY PARAMETERS (emails, addresses — keep out of git)
+# =========================
+infra/aws/params.*.json
+!infra/aws/params.example.json

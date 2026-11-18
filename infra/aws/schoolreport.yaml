@@ -1,0 +1,674 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  SchoolReport GES API: one EC2 server (Docker) + RDS PostgreSQL behind CloudFront HTTPS -
+  single-server design chosen for cost; data tier private, encrypted, backed up; origin only
+  reachable from CloudFront; secrets generated in Secrets Manager.
+
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
+  com.aws.cloudformation.Context:
+    arch: Vercel SPA -> CloudFront (https, WAF optional) -> EC2:80 docker(node api) -> RDS pg (private subnets)
+    must:
+      - deploy code w/ infra/aws/release.sh (S3 tarball -> SSM -> infra/server/deploy.sh); never ssh
+      - always update stack via change set (infra/aws/deploy-stack.sh) and read it first
+      - region != us-east-1 (origin DNS suffix below assumes <region>.compute.amazonaws.com)
+    ref:
+      - { at: infra/README.md, has: runbook deploy/rollback/secrets, scope: this-stack }
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: prod
+    AllowedValues: [prod, staging]
+    Description: Environment name, used in resource names and the config path.
+  AmiId:
+    Type: AWS::EC2::Image::Id
+    Description: Amazon Linux 2023 arm64 AMI. Pinned on purpose (deploy-stack.sh resolves it on create) so updates never replace the server.
+  InstanceType:
+    Type: String
+    Default: t4g.small
+    AllowedValues: [t4g.micro, t4g.small, t4g.medium]
+    Description: API server size (ARM/Graviton).
+  CloudFrontPrefixListId:
+    Type: String
+    AllowedPattern: '^pl-[0-9a-f]+$'
+    Description: Managed prefix list com.amazonaws.global.cloudfront.origin-facing in this Region (deploy-stack.sh looks it up).
+  DbInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+    AllowedValues: [db.t4g.micro, db.t4g.small, db.t4g.medium]
+  DbAllocatedStorage:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 1000
+  DbMultiAZ:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Standby copy in a second data centre (about double the database cost).
+  DbBackupRetentionDays:
+    Type: Number
+    Default: 7
+    MinValue: 1
+    MaxValue: 35
+  FrontendUrl:
+    Type: String
+    AllowedPattern: '^https://[a-z0-9.-]+$'
+    Description: The Vercel site address, e.g. https://schoolreport.vercel.app (used in email links).
+  CorsOrigins:
+    Type: String
+    AllowedPattern: '^https://[a-z0-9.-]+(,https://[a-z0-9.-]+)*$'
+    Description: Comma-separated sites allowed to call the API (normally just FrontendUrl).
+  SuperadminEmail:
+    Type: String
+    AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+    Description: Login email of the platform superadmin created on first start.
+  AlarmEmail:
+    Type: String
+    AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+    Description: Where alarm emails go (confirm the subscription email AWS sends).
+  SmtpSecretArn:
+    Type: String
+    Default: ''
+    Description: Optional. Secrets Manager secret {"username","password"} with SES SMTP credentials.
+  SmtpHost:
+    Type: String
+    Default: ''
+    Description: Optional. e.g. email-smtp.eu-north-1.amazonaws.com
+  EmailFrom:
+    Type: String
+    Default: ''
+    Description: Optional. e.g. "SchoolReport GES" <no-reply@your-domain>
+  WebAclArn:
+    Type: String
+    Default: ''
+    Description: Optional. CloudFront WAF web ACL ARN (created in us-east-1 by infra/aws/waf.sh).
+
+Conditions:
+  HasSmtp: !Not [!Equals [!Ref SmtpSecretArn, '']]
+  HasWebAcl: !Not [!Equals [!Ref WebAclArn, '']]
+
+Resources:
+  # ── Network ──────────────────────────────────────────────────────────────
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.40.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-vpc' }]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: api server subnet; public for outbound (dnf, docker hub, AWS APIs) w/o NAT ($35/mo); inbound locked by SG
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.40.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-public-a' }]
+
+  PublicSubnetARoute:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: no internet route -> db subnets unreachable from outside
+        must: [never add a 0.0.0.0/0 route here]
+    Properties:
+      VpcId: !Ref Vpc
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.40.10.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-private-a' }]
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: RDS subnet group needs 2 AZs (also where a Multi-AZ standby lives)
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.40.11.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-private-b' }]
+
+  PrivateSubnetARoute:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnetBRoute:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetB
+      RouteTableId: !Ref PrivateRouteTable
+
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: only CloudFront edge IPs may reach the api; app also checks X-Origin-Verify secret
+        must:
+          - no 0.0.0.0/0 ingress; no ssh (ops via SSM Session Manager)
+          - descriptions w/o apostrophes (EC2 rejects them; cfn-lint misses it)
+        mutable: review-required
+    Properties:
+      VpcId: !Ref Vpc
+      GroupDescription: API server - HTTP from CloudFront only
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourcePrefixListId: !Ref CloudFrontPrefixListId
+          Description: CloudFront origin-facing
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-api' }]
+
+  DbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref Vpc
+      GroupDescription: PostgreSQL - from the API server only
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref AppSecurityGroup
+          Description: API server
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-db' }]
+
+  # ── Secrets (generated by AWS; never in the template) ────────────────────
+  AppDbPasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: password of db role schoolreport_app (app never uses master; RDS auto-rotates master every 7d)
+        must: [deploy.sh bootstrap re-syncs role pwd from this secret on every deploy]
+    Properties:
+      Description: !Sub 'SchoolReport ${EnvName} - application database password'
+      GenerateSecretString: { PasswordLength: 40, ExcludePunctuation: true }
+
+  JwtSecret:
+    Type: AWS::SecretsManager::Secret
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: signs login tokens; changing it signs everyone out (harmless)
+    Properties:
+      Description: !Sub 'SchoolReport ${EnvName} - JWT signing secret'
+      GenerateSecretString: { PasswordLength: 64, ExcludePunctuation: true }
+
+  OriginVerifySecret:
+    Type: AWS::SecretsManager::Secret
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: CloudFront sends it as X-Origin-Verify; api refuses requests without it (blocks bypassing CloudFront/WAF)
+        must: [CloudFront header and app env must hold the same value; redeploy app after changing]
+    Properties:
+      Description: !Sub 'SchoolReport ${EnvName} - CloudFront origin header'
+      GenerateSecretString: { PasswordLength: 48, ExcludePunctuation: true }
+
+  SuperadminPasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: bootstrap pwd of first superadmin; forced change at first login, so only valid once
+    Properties:
+      Description: !Sub 'SchoolReport ${EnvName} - first superadmin password (change at first login)'
+      GenerateSecretString:
+        PasswordLength: 20
+        RequireEachIncludedType: true
+        ExcludeCharacters: '"''`\/@ '
+
+  # ── Database ─────────────────────────────────────────────────────────────
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: SchoolReport private subnets
+      SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+
+  DbParameterGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Description: SchoolReport PostgreSQL 17 - TLS required
+      Family: postgres17
+      Parameters:
+        rds.force_ssl: '1'
+        log_min_duration_statement: '1000'
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: all school data; single-AZ default for cost (DbMultiAZ=true for standby); gp3 w/ autoscale to 100GB
+        must:
+          - StorageEncrypted, private subnets, PubliclyAccessible=false, force_ssl=1
+          - DeletionProtection stays on; replacement = data loss -> restore from snapshot instead
+          - app connects as schoolreport_app (deploy.sh bootstrap), not master
+        mutable: change-with-constraints
+        mutability:
+          Engine: must-never-change
+          StorageEncrypted: must-never-change
+          DBSubnetGroupName: must-never-change
+          MasterUsername: must-never-change
+    Properties:
+      Engine: postgres
+      EngineVersion: '17.11'   # minor updates install automatically; CI tests on PostgreSQL 17
+      DBInstanceClass: !Ref DbInstanceClass
+      AllocatedStorage: !Ref DbAllocatedStorage
+      MaxAllocatedStorage: 100
+      StorageType: gp3
+      StorageEncrypted: true
+      MasterUsername: sr_master
+      ManageMasterUserPassword: true
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      VPCSecurityGroups: [!Ref DbSecurityGroup]
+      DBParameterGroupName: !Ref DbParameterGroup
+      PubliclyAccessible: false
+      MultiAZ: !Ref DbMultiAZ
+      BackupRetentionPeriod: !Ref DbBackupRetentionDays
+      PreferredBackupWindow: '01:00-01:30'
+      PreferredMaintenanceWindow: 'sun:02:00-sun:02:30'
+      AutoMinorVersionUpgrade: true
+      CopyTagsToSnapshot: true
+      DeletionProtection: true
+      CACertificateIdentifier: rds-ca-rsa2048-g1
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-db' }]
+
+  # ── Release artifacts and logs ───────────────────────────────────────────
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: release tarballs (source, ~200KB) uploaded by release.sh; server builds image itself -> tiny uploads over slow links
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      VersioningConfiguration: { Status: Enabled }
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-old-releases
+            Status: Enabled
+            Prefix: releases/
+            ExpirationInDays: 365
+            NoncurrentVersionExpiration: { NoncurrentDays: 30 }
+
+  ArtifactsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ArtifactsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: [!GetAtt ArtifactsBucket.Arn, !Sub '${ArtifactsBucket.Arn}/*']
+            Condition: { Bool: { 'aws:SecureTransport': 'false' } }
+
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub '/schoolreport/${EnvName}/api'
+      RetentionInDays: 90
+
+  # Non-secret runtime settings, read by infra/server/deploy.sh at each deploy.
+  ConfigParameter:
+    Type: AWS::SSM::Parameter
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: single source of server cfg; stack updates land here, next deploy picks them up
+        must: [no secret values here - only secret ARNs]
+    Properties:
+      Name: !Sub '/schoolreport/${EnvName}/config'
+      Type: String
+      Description: SchoolReport server configuration (non-secret)
+      Value: !Sub
+        - |
+          {"env":"${EnvName}","region":"${AWS::Region}","logGroup":"${ApiLogGroup}",
+           "dbHost":"${Database.Endpoint.Address}","dbPort":"${Database.Endpoint.Port}",
+           "dbName":"schoolreport","dbUser":"schoolreport_app",
+           "dbMasterSecretArn":"${Database.MasterUserSecret.SecretArn}",
+           "appDbSecretArn":"${AppDbPasswordSecret}","jwtSecretArn":"${JwtSecret}",
+           "originSecretArn":"${OriginVerifySecret}","superadminSecretArn":"${SuperadminPasswordSecret}",
+           "superadminEmail":"${SuperadminEmail}","frontendUrl":"${FrontendUrl}","corsOrigins":"${CorsOrigins}",
+           "smtpSecretArn":"${SmtpSecretArn}","smtpHost":"${SmtpHost}","emailFrom":"${EmailFromJson}"}
+        - EmailFromJson: !Join ['\"', !Split ['"', !Ref EmailFrom]]
+
+  # ── API server ───────────────────────────────────────────────────────────
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: least privilege - SSM mgmt, read own secrets/config/releases, write own logs
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore'
+      Policies:
+        - PolicyName: schoolreport-runtime
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadSecrets
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref AppDbPasswordSecret
+                  - !Ref JwtSecret
+                  - !Ref OriginVerifySecret
+                  - !Ref SuperadminPasswordSecret
+                  - !GetAtt Database.MasterUserSecret.SecretArn
+                  - !If [HasSmtp, !Ref SmtpSecretArn, !Ref AWS::NoValue]
+              - Sid: ReadConfig
+                Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/schoolreport/${EnvName}/config'
+              - Sid: ReadReleases
+                Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub '${ArtifactsBucket.Arn}/releases/*'
+              - Sid: WriteLogs
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents, logs:DescribeLogStreams]
+                Resource: !Sub '${ApiLogGroup.Arn}:*'
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+  ApiServer:
+    Type: AWS::EC2::Instance
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: runs api container (docker, restart=unless-stopped); single server = cost choice, ~seconds downtime per deploy
+        must:
+          - AmiId pinned; changing it REPLACES the server (then redeploy app)
+          - IMDSv2 only, hop limit 1 (containers cannot reach instance credentials)
+        mutable: review-required
+        mutability:
+          InstanceType: change-with-constraints
+          ImageId: must-never-change
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref InstanceProfile
+      DisableApiTermination: true
+      MetadataOptions:
+        HttpTokens: required
+        HttpPutResponseHopLimit: 1
+        HttpEndpoint: enabled
+      NetworkInterfaces:
+        - DeviceIndex: '0'
+          SubnetId: !Ref PublicSubnetA
+          AssociatePublicIpAddress: true
+          GroupSet: [!Ref AppSecurityGroup]
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs: { VolumeSize: 20, VolumeType: gp3, Encrypted: true, DeleteOnTermination: true }
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          set -euxo pipefail
+          for i in 1 2 3 4 5; do dnf install -y docker jq && break || sleep 15; done
+          systemctl enable --now docker
+          mkdir -p /opt/schoolreport/releases
+          chmod 700 /opt/schoolreport
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-api' }]
+
+  ApiServerIp:
+    Type: AWS::EC2::EIP
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: fixed public address -> CloudFront origin DNS survives stop/start
+        must: [CloudFront origin is built from this IP]
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref ApiServer
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-api' }]
+
+  # ── HTTPS entry point ────────────────────────────────────────────────────
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: https on *.cloudfront.net until a domain exists; no caching (personal data); all headers incl Authorization forwarded
+        must:
+          - ViewerProtocolPolicy https-only; CachingDisabled policy
+          - X-Origin-Verify header = OriginVerifySecret
+        mutable: change-with-constraints
+    Properties:
+      DistributionConfig:
+        Comment: !Sub 'SchoolReport ${EnvName} API'
+        Enabled: true
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_All
+        WebACLId: !If [HasWebAcl, !Ref WebAclArn, !Ref AWS::NoValue]
+        Origins:
+          - Id: api
+            DomainName: !Join ['', ['ec2-', !Join ['-', !Split ['.', !Ref ApiServerIp]], '.', !Ref 'AWS::Region', '.compute.amazonaws.com']]
+            CustomOriginConfig:
+              HTTPPort: 80
+              OriginProtocolPolicy: http-only
+              OriginReadTimeout: 30
+              OriginKeepaliveTimeout: 60
+            OriginCustomHeaders:
+              - HeaderName: X-Origin-Verify
+                HeaderValue: !Sub '{{resolve:secretsmanager:${OriginVerifySecret}}}'
+        DefaultCacheBehavior:
+          TargetOriginId: api
+          ViewerProtocolPolicy: https-only
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad          # Managed-CachingDisabled
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac  # Managed-AllViewerExceptHostHeader
+
+  # ── Patching ─────────────────────────────────────────────────────────────
+  WeeklyPatching:
+    Type: AWS::SSM::Association
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: OS security patches weekly, Sun 03:00 UTC; reboots only if needed; container restarts itself
+    Properties:
+      Name: AWS-RunPatchBaseline
+      ScheduleExpression: cron(0 3 ? * SUN *)
+      Parameters:
+        Operation: [Install]
+        RebootOption: [RebootIfNeeded]
+      Targets:
+        - Key: InstanceIds
+          Values: [!Ref ApiServer]
+
+  # ── Alarms ───────────────────────────────────────────────────────────────
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: >-
+          alarm emails; no KMS on purpose - alarm text holds no personal data and CloudWatch
+          cannot publish to a topic using the aws/sns managed key (CMK costs extra)
+    Properties:
+      DisplayName: !Sub 'SchoolReport ${EnvName} alarms'
+
+  AlarmEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  ServerRecoverAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: AWS host problem - server is moved to healthy hardware automatically
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed_System
+      Dimensions: [{ Name: InstanceId, Value: !Ref ApiServer }]
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions: [!Sub 'arn:${AWS::Partition}:automate:${AWS::Region}:ec2:recover', !Ref AlarmTopic]
+
+  ServerRebootAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Server not responding - rebooted automatically
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed_Instance
+      Dimensions: [{ Name: InstanceId, Value: !Ref ApiServer }]
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions: [!Sub 'arn:${AWS::Partition}:automate:${AWS::Region}:ec2:reboot', !Ref AlarmTopic]
+
+  ServerCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: API server CPU above 80% for 15 minutes
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Dimensions: [{ Name: InstanceId, Value: !Ref ApiServer }]
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlarmTopic]
+
+  DbCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Database CPU above 80% for 15 minutes
+      Namespace: AWS/RDS
+      MetricName: CPUUtilization
+      Dimensions: [{ Name: DBInstanceIdentifier, Value: !Ref Database }]
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlarmTopic]
+
+  DbStorageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Database free storage below 2 GB
+      Namespace: AWS/RDS
+      MetricName: FreeStorageSpace
+      Dimensions: [{ Name: DBInstanceIdentifier, Value: !Ref Database }]
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 2147483648
+      ComparisonOperator: LessThanThreshold
+      AlarmActions: [!Ref AlarmTopic]
+
+  AppErrorMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ApiLogGroup
+      FilterPattern: '{ $.level = "error" }'
+      MetricTransformations:
+        - MetricNamespace: !Sub 'SchoolReport/${EnvName}'
+          MetricName: AppErrors
+          MetricValue: '1'
+          DefaultValue: 0
+
+  AppErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: API logged 5 or more errors in 5 minutes (server errors, email failures, crashes)
+      Namespace: !Sub 'SchoolReport/${EnvName}'
+      MetricName: AppErrors
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+Outputs:
+  ApiUrl:
+    Description: HTTPS address of the API. On Vercel set VITE_API_URL to this value + /api.
+    Value: !Sub 'https://${Distribution.DomainName}'
+  InstanceId:
+    Description: API server (open a shell with aws ssm start-session).
+    Value: !Ref ApiServer
+  ArtifactsBucketName:
+    Description: Where release.sh uploads releases.
+    Value: !Ref ArtifactsBucket
+  ConfigParameterName:
+    Description: Server configuration read at each deploy.
+    Value: !Ref ConfigParameter
+  LogGroupName:
+    Description: API logs (CloudWatch Logs).
+    Value: !Ref ApiLogGroup
+  SuperadminSecretArn:
+    Description: First superadmin password (read once with get-secret-value; must be changed at first login).
+    Value: !Ref SuperadminPasswordSecret
+  DatabaseEndpoint:
+    Description: PostgreSQL address (private; reachable only from the API server).
+    Value: !GetAtt Database.Endpoint.Address

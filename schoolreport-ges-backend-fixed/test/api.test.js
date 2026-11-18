@@ -37,6 +37,7 @@ Object.assign(process.env, {
   JWT_SECRET: `test-secret-${'x'.repeat(40)}`,
   NODE_ENV: 'test',
   AUTH_RATE_LIMIT_MAX: '1000',
+  LOGIN_IP_FAIL_LIMIT: '1000',
   API_RATE_LIMIT_MAX: '100000',
   SUPERADMIN_EMAIL: 'root@test.local',
   SUPERADMIN_PASSWORD: 'RootPass#12345',
@@ -136,6 +137,17 @@ test('with ORIGIN_VERIFY_SECRET set, only requests carrying it are served', asyn
   } finally {
     await new Promise((r) => guarded.close(r))
   }
+})
+
+test('an account is paused after 10 failed logins, without blocking others on the same IP', async () => {
+  for (let i = 0; i < 10; i++) {
+    assert.equal((await api('POST', '/api/auth/login', { body: { email: 'target@test.local', password: `guess${i}` } })).status, 401)
+  }
+  const blocked = await api('POST', '/api/auth/login', { body: { email: 'Target@Test.local', password: 'guess-again' } })
+  assert.equal(blocked.status, 429, 'same account, different capitalisation')
+  assert.match(blocked.data.message, /this account/)
+  // Another account from the same IP is unaffected.
+  assert.equal((await api('POST', '/api/auth/login', { body: { email: 'other@test.local', password: 'x' } })).status, 401)
 })
 
 test('login rejects bad credentials and bad input without crashing', async () => {

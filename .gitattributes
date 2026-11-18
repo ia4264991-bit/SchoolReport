@@ -1,0 +1,4 @@
+# Shell scripts and the Dockerfile run on Linux: keep LF line endings on every OS.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.pem text eol=lf

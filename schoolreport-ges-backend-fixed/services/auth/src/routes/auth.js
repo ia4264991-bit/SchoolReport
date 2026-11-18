@@ -19,16 +19,41 @@ const router = Router()
 const OTP_TTL_MINUTES = 10
 const OTP_MAX_ATTEMPTS = 5
 
-// Slows down password guessing. Counted per client IP over 15 minutes.
+const emailFrom = (body) => (typeof body?.email === 'string' ? body.email.trim().toLowerCase() : '')
+const WINDOW_MS = 15 * 60 * 1000
+const tooMany = { message: 'Too many attempts. Please wait 15 minutes and try again.' }
+
+// Password-reset steps: per client IP over 15 minutes.
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: parseInt(process.env.AUTH_RATE_LIMIT_MAX || '20', 10),
+  windowMs: WINDOW_MS,
+  limit: parseInt(process.env.AUTH_RATE_LIMIT_MAX || '30', 10),
   standardHeaders: 'draft-7',
   legacyHeaders: false,
-  message: { message: 'Too many attempts. Please wait 15 minutes and try again.' },
+  message: tooMany,
 })
 
-const emailFrom = (body) => (typeof body?.email === 'string' ? body.email.trim().toLowerCase() : '')
+// Login, per IP: only FAILED attempts count. A whole school often shares one public IP,
+// so successful staff logins must not use up the allowance.
+const loginIpLimiter = rateLimit({
+  windowMs: WINDOW_MS,
+  limit: parseInt(process.env.LOGIN_IP_FAIL_LIMIT || '100', 10),
+  skipSuccessfulRequests: true,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: tooMany,
+})
+
+// Login, per account: 10 failed tries on one email pause that account for 15 minutes,
+// whatever IPs the guesses come from.
+const loginAccountLimiter = rateLimit({
+  windowMs: WINDOW_MS,
+  limit: parseInt(process.env.LOGIN_ACCOUNT_FAIL_LIMIT || '10', 10),
+  skipSuccessfulRequests: true,
+  keyGenerator: (req) => `acct:${emailFrom(req.body) || 'none'}`,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { message: 'Too many failed attempts for this account. Please wait 15 minutes or reset your password.' },
+})
 
 function checkNewPassword(pw) {
   if (typeof pw !== 'string' || pw.length < PASSWORD_MIN) {
@@ -40,7 +65,7 @@ function checkNewPassword(pw) {
 }
 
 /* POST /api/auth/login */
-router.post('/login', authLimiter, ah(async (req, res) => {
+router.post('/login', loginIpLimiter, loginAccountLimiter, ah(async (req, res) => {
   const email = emailFrom(req.body)
   const password = typeof req.body?.password === 'string' ? req.body.password : ''
   if (!email || !password) throw new HttpError(400, 'Email and password are required.')

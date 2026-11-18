@@ -1,0 +1,14 @@
+[
+  { "ParameterKey": "FrontendUrl",     "ParameterValue": "https://your-app.vercel.app" },
+  { "ParameterKey": "CorsOrigins",     "ParameterValue": "https://your-app.vercel.app" },
+  { "ParameterKey": "SuperadminEmail", "ParameterValue": "platform-admin@example.com" },
+  { "ParameterKey": "AlarmEmail",      "ParameterValue": "alerts@example.com" },
+  { "ParameterKey": "InstanceType",    "ParameterValue": "t4g.small" },
+  { "ParameterKey": "DbInstanceClass", "ParameterValue": "db.t4g.micro" },
+  { "ParameterKey": "DbMultiAZ",       "ParameterValue": "false" },
+  { "ParameterKey": "DbBackupRetentionDays", "ParameterValue": "7" },
+  { "ParameterKey": "SmtpSecretArn",   "ParameterValue": "" },
+  { "ParameterKey": "SmtpHost",        "ParameterValue": "" },
+  { "ParameterKey": "EmailFrom",       "ParameterValue": "" },
+  { "ParameterKey": "WebAclArn",       "ParameterValue": "" }
+]
