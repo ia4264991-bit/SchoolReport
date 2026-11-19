@@ -83,3 +83,7 @@ CREATE INDEX online_payments_school_idx ON online_payments (school_id, created_a
 
 -- The school's Paystack subaccount code (e.g. ACCT_xxxx): online fee payments settle to it.
 ALTER TABLE schools ADD COLUMN paystack_subaccount text CHECK (paystack_subaccount ~ '^ACCT_[A-Za-z0-9]+$');
+
+-- The school admin's switch: off = parents pay at the school office only (cash, MoMo to the
+-- school, bank), which the bursar records as usual.
+ALTER TABLE school_settings ADD COLUMN online_fee_payments boolean NOT NULL DEFAULT true;

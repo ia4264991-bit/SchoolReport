@@ -131,6 +131,17 @@ test('a parent pays online; the money goes to the school subaccount and is recor
   assert.equal((await t.api('PUT', `/api/superadmin/schools/${s.school}/billing`, { token: t.root, body: { paystackSubaccount: 'ACCT_delta123' } })).status, 200)
   assert.equal((await t.api('GET', '/api/parent/children', { token: s.parent })).data.onlinePayment, true)
 
+  // The school admin can turn online payment off (pay at the office only) and on again.
+  assert.equal((await t.api('PUT', '/api/school/settings', { token: s.head, body: { onlineFeePayments: false } })).status, 403, 'admin only')
+  const off = await t.api('PUT', '/api/school/settings', { token: s.admin, body: { onlineFeePayments: false } })
+  assert.equal(off.status, 200)
+  assert.equal(off.data.onlineFeePayments, false)
+  assert.equal((await t.api('GET', '/api/parent/children', { token: s.parent })).data.onlinePayment, false)
+  const refused = await t.api('POST', `/api/parent/children/${s.a2}/fees/pay`, { token: s.parent, body: { amount: 100 } })
+  assert.equal(refused.status, 409)
+  assert.match(refused.data.message, /school office/)
+  assert.equal((await t.api('PUT', '/api/school/settings', { token: s.admin, body: { onlineFeePayments: true } })).status, 200)
+
   const pay = await t.api('POST', `/api/parent/children/${s.a2}/fees/pay`, { token: s.parent, body: { amount: 100 } })
   assert.equal(pay.status, 200, JSON.stringify(pay.data))
   assert.match(pay.data.authorizationUrl, /^https:\/\/checkout\.paystack\.test\//)

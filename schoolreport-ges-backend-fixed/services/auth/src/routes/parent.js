@@ -14,14 +14,23 @@ const router = Router()
 router.use(requireAuth, requireSchool, requireRole('parent'))
 
 const sid = (req) => req.user.schoolId
+
+/** Online fee payment needs: Paystack set up, the school's subaccount, and the admin's switch on. */
+async function onlineFees(schoolId) {
+  const { rows: [r] } = await query(
+    `SELECT sc.paystack_subaccount, st.online_fee_payments
+       FROM schools sc LEFT JOIN school_settings st ON st.school_id = sc.id WHERE sc.id = $1`,
+    [schoolId]
+  )
+  return { subaccount: r?.paystack_subaccount || null, on: paystackConfigured() && Boolean(r?.paystack_subaccount) && r?.online_fee_payments !== false }
+}
 const frontend = () => (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '')
 
 /* GET /api/parent/children */
 router.get('/children', ah(async (req, res) => {
   const kids = await childrenOf(req.user)
-  const { rows: [school] } = await query('SELECT paystack_subaccount FROM schools WHERE id = $1', [sid(req)])
   res.json({
-    onlinePayment: paystackConfigured() && Boolean(school?.paystack_subaccount),
+    onlinePayment: (await onlineFees(sid(req))).on,
     children: kids.map((k) => ({ _id: k.id, fullName: k.full_name, gender: k.gender, classId: k.class_id, className: k.class_name || '' })),
   })
 }))
@@ -56,9 +65,9 @@ router.get('/children/:id/fees', ah(async (req, res) => {
    The money goes straight to the school's own Paystack subaccount. */
 router.post('/children/:id/fees/pay', ah(async (req, res) => {
   const studentId = await ownPupil(req, req.params.id)
-  const { rows: [school] } = await query('SELECT paystack_subaccount FROM schools WHERE id = $1', [sid(req)])
-  if (!paystackConfigured() || !school?.paystack_subaccount) {
-    throw new HttpError(409, 'This school does not take online payments yet. Please pay at the school office.')
+  const online = await onlineFees(sid(req))
+  if (!online.on) {
+    throw new HttpError(409, 'This school takes fees at the school office only. Please pay there; you will get a receipt.')
   }
   const amount = money(req.body?.amount, 'Amount')
   if (amount < 1) throw new HttpError(400, 'The smallest online payment is GHS 1.00.')
@@ -78,7 +87,7 @@ router.post('/children/:id/fees/pay', ah(async (req, res) => {
     amountPesewas,
     reference,
     callbackUrl: `${frontend()}/parent`,
-    subaccount: school.paystack_subaccount,
+    subaccount: online.subaccount,
     metadata: { purpose: 'fees', school_id: sid(req), student_id: studentId },
   })
   res.json({ authorizationUrl, reference, amount })

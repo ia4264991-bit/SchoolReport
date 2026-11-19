@@ -67,6 +67,11 @@ router.put('/settings', requireAuth, requireSchool, requireRole('admin', 'head')
     grading_scale:  b.gradingScale !== undefined ? checkGradingScale(b.gradingScale) : current.grading_scale,
     class_score_weight: b.classScoreWeight !== undefined ? Number(b.classScoreWeight) : current.class_score_weight,
     sms_absence_alerts: b.smsAbsenceAlerts !== undefined ? b.smsAbsenceAlerts === true : current.sms_absence_alerts,
+    online_fee_payments: b.onlineFeePayments !== undefined ? b.onlineFeePayments === true : current.online_fee_payments,
+  }
+  // How parents may pay is the school admin's decision.
+  if (next.online_fee_payments !== current.online_fee_payments && req.user.role !== 'admin') {
+    throw new HttpError(403, 'Only the school admin can turn online fee payments on or off.')
   }
   if (!TERMS.includes(next.term)) throw new HttpError(400, 'Term must be 1, 2 or 3.')
   if (!Number.isInteger(next.class_score_weight) || next.class_score_weight < 0 || next.class_score_weight > 100) {
@@ -78,12 +83,12 @@ router.put('/settings', requireAuth, requireSchool, requireRole('admin', 'head')
       `UPDATE school_settings
           SET school_name = $2, circuit = $3, district = $4, region = $5, head_teacher = $6,
               academic_year = $7, term = $8, next_term_date = $9,
-              grading_scale = $10, class_score_weight = $11, sms_absence_alerts = $12
+              grading_scale = $10, class_score_weight = $11, sms_absence_alerts = $12, online_fee_payments = $13
         WHERE school_id = $1
         RETURNING *`,
       [sid(req), next.school_name, next.circuit, next.district, next.region,
        next.head_teacher, next.academic_year, next.term, next.next_term_date,
-       JSON.stringify(next.grading_scale), next.class_score_weight, next.sms_absence_alerts]
+       JSON.stringify(next.grading_scale), next.class_score_weight, next.sms_absence_alerts, next.online_fee_payments]
     )
     // Keep the platform's school record in step, so the superadmin sees the same name.
     await db.query(

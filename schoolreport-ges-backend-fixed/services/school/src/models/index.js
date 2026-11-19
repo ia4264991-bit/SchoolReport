@@ -44,6 +44,7 @@ export const settingsToApi = (r) => ({
   gradingScale: r.grading_scale,
   classScoreWeight: r.class_score_weight,
   smsAbsenceAlerts: r.sms_absence_alerts,
+  onlineFeePayments: r.online_fee_payments,
   // Fingerprint of the current logo (null = none); the app loads /school/logo?v=<this>.
   logoVersion: r.logo_version ?? null,
   updatedAt: r.updated_at,

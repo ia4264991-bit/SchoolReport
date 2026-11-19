@@ -126,7 +126,8 @@ router.post('/verify', limiter, ah(async (req, res) => {
   }
 
   const user = await withTransaction(async (db) => {
-    await db.query('DELETE FROM phone_login_codes WHERE phone = $1', [phone]) // a code works once
+    // A code works once. The row stays (expired) so the hourly SMS count is not reset.
+    await db.query('UPDATE phone_login_codes SET expires_at = now() WHERE phone = $1', [phone])
     const { rows: [g] } = await db.query(
       `SELECT guardian_name FROM students
         WHERE school_id = $1 AND is_active AND (guardian_phone = $2 OR guardian_phone2 = $2) AND guardian_name <> ''
