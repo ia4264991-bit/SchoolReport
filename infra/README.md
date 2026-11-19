@@ -63,14 +63,20 @@ Monday). It starts a fresh API + PostgreSQL on the runner, seeds one demo school
 Needs the repo secret `HAWK_API_KEY`. **Keep `openapi.yaml` in step with the routes** — a route that is
 missing from it is not scanned.
 
-## Email (after buying the domain)
+## Email
 
-1. SES (same Region) → Identities → create the domain identity; add the DKIM CNAMEs at your DNS host.
-2. Request SES production access (otherwise only verified addresses receive mail).
-3. SES → SMTP settings → create SMTP credentials; store them:
-   `aws secretsmanager create-secret --name schoolreport/prod/smtp --secret-string '{"username":"…","password":"…"}'`
-4. In `params.prod.json`: `SmtpSecretArn`, `SmtpHost = email-smtp.<region>.amazonaws.com`,
-   `EmailFrom = "SchoolReport GES" <no-reply@your-domain>`; run `deploy-stack.sh`, then `release.sh`.
+**Today: Brevo SMTP** (`smtp-relay.brevo.com:587`, TLS required). The login is in the secret
+`schoolreport/prod/smtp-brevo` as `{"username":"…","password":"…"}`; `params.prod.json` sets
+`SmtpSecretArn` to it, `SmtpHost = smtp-relay.brevo.com` and
+`EmailFrom = "SchoolReport" <no-reply@schoolreport.online>`. Brevo's DKIM and DMARC records are in
+the Route 53 zone. To change the login: `aws secretsmanager put-secret-value`, then `release.sh`.
+
+**Moving to Amazon SES later** (the domain identity is already verified; production access was
+refused once, so open a new Support case: Service limit increase → SES Sending Limits):
+1. Once approved, `./infra/aws/ses-smtp.sh` creates a send-only IAM user and stores its SMTP login
+   in `schoolreport/prod/smtp`.
+2. In `params.prod.json`: `SmtpSecretArn` = that secret, `SmtpHost = email-smtp.<region>.amazonaws.com`;
+   run `deploy-stack.sh`, then `release.sh`.
 
 ## Custom domain (later)
 
