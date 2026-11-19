@@ -19,6 +19,13 @@ export const schoolToApi = (r) => ({
   district: r.district,
   region: r.region,
   isActive: r.is_active,
+  plan: r.plan,
+  trialEndsAt: r.trial_ends_at ?? null,
+  paidUntil: r.paid_until ?? null,
+  phone: r.phone ?? null,
+  signupSource: r.signup_source,
+  smsMonthlyLimit: r.sms_monthly_limit,
+  paystackSubaccount: r.paystack_subaccount ?? null,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 })
@@ -34,6 +41,9 @@ export const settingsToApi = (r) => ({
   academicYear: r.academic_year,
   term: r.term,
   nextTermDate: r.next_term_date || '',
+  gradingScale: r.grading_scale,
+  classScoreWeight: r.class_score_weight,
+  smsAbsenceAlerts: r.sms_absence_alerts,
   // Fingerprint of the current logo (null = none); the app loads /school/logo?v=<this>.
   logoVersion: r.logo_version ?? null,
   updatedAt: r.updated_at,

@@ -1,6 +1,9 @@
 import { Router } from 'express'
 import { query, withTransaction } from '../../../../shared/db.js'
-import { ah, HttpError, isEmail, str, requiredStr, idParam } from '../../../../shared/http.js'
+import { ah, HttpError, isEmail, str, requiredStr, idParam, dateOrNull } from '../../../../shared/http.js'
+import { subscriptionState } from '../../../../shared/subscription.js'
+import { extendSubscription, subscriptionPaymentToApi } from '../../../school/src/billing.js'
+import { money } from '../../../school/src/fees.js'
 import { audit } from '../../../../shared/audit.js'
 import { schoolToApi, currentAcademicYear } from '../../../school/src/models/index.js'
 import { requireAuth, requireRole } from '../middleware/auth.js'
@@ -89,10 +92,73 @@ router.post('/schools', ah(async (req, res) => {
   })
 }))
 
-/* GET /api/superadmin/schools */
+/* GET /api/superadmin/schools — with plan status, pupils and SMS used this month */
 router.get('/schools', ah(async (req, res) => {
-  const { rows } = await query('SELECT * FROM schools ORDER BY created_at DESC')
-  res.json(rows.map(schoolToApi))
+  const { rows } = await query(
+    `SELECT sc.*,
+            (SELECT count(*) FROM students s WHERE s.school_id = sc.id AND s.is_active)::int AS pupils,
+            (SELECT coalesce(sum(segments), 0) FROM sms_messages m
+              WHERE m.school_id = sc.id AND m.status = 'sent' AND m.created_at >= date_trunc('month', now()))::int AS sms_used
+       FROM schools sc ORDER BY sc.created_at DESC`
+  )
+  res.json(rows.map((r) => ({ ...schoolToApi(r), pupils: r.pupils, smsUsedThisMonth: r.sms_used, subscription: subscriptionState(r) })))
+}))
+
+/* PUT /api/superadmin/schools/:id/billing
+   { plan?, trialEndsAt?, paidUntil?, smsMonthlyLimit?, paystackSubaccount? } */
+router.put('/schools/:id/billing', ah(async (req, res) => {
+  const id = idParam(req.params.id, 'School')
+  const b = req.body || {}
+  const { rows: [old] } = await query('SELECT * FROM schools WHERE id = $1', [id])
+  if (!old) throw new HttpError(404, 'School not found.')
+  const next = {
+    plan: b.plan !== undefined ? b.plan : old.plan,
+    trial_ends_at: b.trialEndsAt !== undefined ? dateOrNull(b.trialEndsAt, 'Trial end') : old.trial_ends_at,
+    paid_until: b.paidUntil !== undefined ? dateOrNull(b.paidUntil, 'Paid until') : old.paid_until,
+    sms_monthly_limit: b.smsMonthlyLimit !== undefined ? Number(b.smsMonthlyLimit) : old.sms_monthly_limit,
+    paystack_subaccount: b.paystackSubaccount !== undefined ? (str(b.paystackSubaccount, 'Paystack subaccount', { max: 40 }) || null) : old.paystack_subaccount,
+  }
+  if (!['complimentary', 'trial', 'paid'].includes(next.plan)) throw new HttpError(400, 'Plan must be complimentary, trial or paid.')
+  if (!Number.isInteger(next.sms_monthly_limit) || next.sms_monthly_limit < 0 || next.sms_monthly_limit > 1_000_000) {
+    throw new HttpError(400, 'The SMS limit must be a whole number.')
+  }
+  if (next.paystack_subaccount && !/^ACCT_[A-Za-z0-9]+$/.test(next.paystack_subaccount)) {
+    throw new HttpError(400, 'A Paystack subaccount code looks like ACCT_xxxxxxxx.')
+  }
+  const { rows: [r] } = await query(
+    `UPDATE schools SET plan = $2, trial_ends_at = $3, paid_until = $4, sms_monthly_limit = $5, paystack_subaccount = $6
+      WHERE id = $1 RETURNING *`,
+    [id, next.plan, next.trial_ends_at, next.paid_until, next.sms_monthly_limit, next.paystack_subaccount]
+  )
+  await audit(req, 'school.billing_update', {
+    schoolId: id, targetType: 'school', targetId: id,
+    details: { plan: [old.plan, r.plan], trialEndsAt: [old.trial_ends_at, r.trial_ends_at], paidUntil: [old.paid_until, r.paid_until],
+      smsMonthlyLimit: [old.sms_monthly_limit, r.sms_monthly_limit], paystackSubaccount: [old.paystack_subaccount, r.paystack_subaccount] },
+  })
+  res.json({ ...schoolToApi(r), subscription: subscriptionState(r) })
+}))
+
+/* POST /api/superadmin/schools/:id/payments { amount, months?, reference?, note? }
+   A subscription paid outside the app (bank transfer, MoMo to the company). */
+router.post('/schools/:id/payments', ah(async (req, res) => {
+  const id = idParam(req.params.id, 'School')
+  const b = req.body || {}
+  const amount = money(b.amount, 'Amount')
+  const months = b.months === undefined ? undefined : Number(b.months)
+  if (months !== undefined && (!Number.isInteger(months) || months < 1 || months > 24)) throw new HttpError(400, 'Months must be 1 to 24.')
+  const pay = await withTransaction(async (db) => {
+    const { rows: [s] } = await db.query('SELECT id FROM schools WHERE id = $1', [id])
+    if (!s) throw new HttpError(404, 'School not found.')
+    const { rows: [n] } = await db.query('SELECT count(*)::int AS n FROM students WHERE school_id = $1 AND is_active', [id])
+    const p = await extendSubscription(db, id, {
+      amount, pupils: n.n, method: 'manual', months,
+      reference: str(b.reference, 'Reference', { max: 80 }) || null,
+      note: str(b.note, 'Note', { max: 200 }), recordedByName: req.user.fullName,
+    })
+    await audit(req, 'billing.manual_payment', { db, schoolId: id, targetType: 'school', targetId: id, details: { amount, periodEnd: p.period_end } })
+    return p
+  })
+  res.status(201).json(subscriptionPaymentToApi(pay))
 }))
 
 /* PUT /api/superadmin/schools/:id/toggle — activate / deactivate a school */

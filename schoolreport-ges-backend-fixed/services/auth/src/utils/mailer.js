@@ -9,6 +9,9 @@ import { log } from '../../../../shared/log.js'
  * Port 587 upgrades to TLS (STARTTLS, required); SMTP_SECURE=true for port 465.
  */
 
+/** Tests read sent emails here (nothing is sent in tests). */
+export const mailOutbox = []
+
 /** True when SMTP is fully set up, i.e. emails can actually be sent. */
 export function emailConfigured() {
   return Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS && process.env.EMAIL_FROM)
@@ -45,6 +48,10 @@ function getTransporter() {
  * `kind` is what gets logged — never the subject (the reset email's subject holds the code).
  */
 function _sendBackground({ kind, to, subject, html }) {
+  if (process.env.NODE_ENV === 'test') {
+    mailOutbox.push({ kind, to, subject, html })
+    return
+  }
   if (!emailConfigured()) {
     log.warn('email not sent: SMTP is not configured', { kind, to: maskEmail(to) })
     return
@@ -158,6 +165,36 @@ export function sendOTPEmail({ to, fullName, otp }) {
       </div>
       <div style="background:#f8f9fc;padding:12px 28px;border-top:1px solid #e8ecf3;">
         <p style="margin:0;font-size:11px;color:#aaa;">Automated message from SchoolReport GES. Do not reply.</p>
+      </div>
+    </div>`,
+  })
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SIGN-UP — confirm the email of a school signing itself up
+═══════════════════════════════════════════════════════════════ */
+export function sendSignupCodeEmail({ to, fullName, schoolName, code }) {
+  fullName = esc(fullName)
+  schoolName = esc(schoolName)
+  _sendBackground({
+    kind: 'signup_code',
+    to,
+    subject: `${code} — confirm your school on SchoolReport`,
+    html: `
+    <div style="font-family:Segoe UI,Arial,sans-serif;max-width:480px;margin:0 auto;border:1px solid #e3e8f0;border-radius:14px;overflow:hidden;">
+      <div style="background:#185FA5;padding:20px 28px;text-align:center;">
+        <span style="color:#fff;font-size:18px;font-weight:700;">SchoolReport</span>
+      </div>
+      <div style="padding:28px;">
+        <h2 style="color:#185FA5;margin:0 0 8px;">Welcome, ${fullName}</h2>
+        <p style="color:#555;margin:0 0 24px;">
+          Enter this code to finish setting up <strong>${schoolName}</strong> on SchoolReport.
+        </p>
+        <div style="text-align:center;background:#f4f6fb;border-radius:12px;padding:28px;margin-bottom:20px;">
+          <div style="font-size:44px;font-weight:900;letter-spacing:12px;color:#185FA5;">${code}</div>
+          <p style="margin:12px 0 0;font-size:13px;color:#888;">Valid for <strong>30 minutes</strong></p>
+        </div>
+        <p style="margin:0;font-size:13px;color:#888;">If you did not sign up, ignore this email: nothing is created without the code.</p>
       </div>
     </div>`,
   })

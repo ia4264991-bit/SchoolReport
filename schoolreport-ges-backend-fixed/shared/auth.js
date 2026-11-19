@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken'
 import { query } from './db.js'
 import { ah, HttpError, isUuid } from './http.js'
+import { subscriptionState, lockedWriteBlocked } from './subscription.js'
 
 export const JWT_ALGORITHM = 'HS256'
 
@@ -19,7 +20,7 @@ export function signToken(userId, tokenVersion) {
  * Verifies the Bearer token, then loads the user fresh from the database, so that
  * deactivating a user or school, or changing a role or class, takes effect at once
  * instead of when the token expires.
- * Sets req.user = { id, email, role, schoolId, classId, fullName, mustChangePassword }.
+ * Sets req.user = { id, email, phone, role, schoolId, classId, studentId, fullName, mustChangePassword, subscription }.
  */
 function authenticate({ allowPendingPasswordChange }) {
   return ah(async (req, res, next) => {
@@ -41,8 +42,9 @@ function authenticate({ allowPendingPasswordChange }) {
     if (!isUuid(payload?.id)) return res.status(401).json({ message: 'Invalid token.' })
 
     const { rows } = await query(
-      `SELECT u.id, u.email, u.role, u.school_id, u.class_id, u.student_id, u.full_name, u.token_version,
-              u.is_active, u.must_change_password, s.is_active AS school_active
+      `SELECT u.id, u.email, u.phone, u.role, u.school_id, u.class_id, u.student_id, u.full_name, u.token_version,
+              u.is_active, u.must_change_password, s.is_active AS school_active,
+              s.plan, s.trial_ends_at, s.paid_until
          FROM users u
          LEFT JOIN schools s ON s.id = u.school_id
         WHERE u.id = $1`,
@@ -61,10 +63,19 @@ function authenticate({ allowPendingPasswordChange }) {
     if (u.must_change_password && !allowPendingPasswordChange) {
       return res.status(403).json({ message: 'You must change your password before continuing.' })
     }
+    // A school whose trial or subscription has ended is read-only (parents are unaffected).
+    const subscription = u.school_id ? subscriptionState(u) : null
+    if (subscription && u.role !== 'parent' && lockedWriteBlocked(req, subscription)) {
+      return res.status(402).json({
+        code: 'subscription_ended',
+        message: "Your school's subscription has ended. You can still view and print everything; renew under Billing to make changes.",
+      })
+    }
 
     req.user = {
       id: u.id,
       email: u.email,
+      phone: u.phone,
       role: u.role,
       schoolId: u.school_id,
       classId: u.class_id,
@@ -72,6 +83,7 @@ function authenticate({ allowPendingPasswordChange }) {
       fullName: u.full_name,
       mustChangePassword: u.must_change_password,
       tokenVersion: u.token_version,
+      subscription,
     }
     next()
   })
@@ -102,14 +114,17 @@ export function requireSchool(req, res, next) {
   next()
 }
 
+/** Staff who teach or run the school (not student, parent or bursar logins). */
+export const TEACHING_ROLES = ['admin', 'head', 'teacher']
+
 /**
  * Checks that classId is a class of the caller's school and that the caller may use it:
  *  - teachers only their own assigned class
- *  - student logins are not linked to a student record yet, so they get no class data
+ *  - student, parent and bursar logins never get class records (marks, registers)
  * Returns the class row.
  */
 export async function assertClassAccess(req, classId) {
-  if (req.user.role === 'student') throw new HttpError(403, 'Student accounts cannot view class records.')
+  if (!TEACHING_ROLES.includes(req.user.role)) throw new HttpError(403, 'Your account cannot view class records.')
   if (!isUuid(classId)) throw new HttpError(404, 'Class not found.')
   const { rows } = await query(
     'SELECT id, name, level FROM classes WHERE id = $1 AND school_id = $2',

@@ -14,11 +14,5 @@ export function scoreToApi(r) {
   }
 }
 
-/**
- * GES weighting: class score is converted to 40%, exam score (out of 100) to 60%.
- * maxClassScore is the subject's raw maximum for the class score (100 when not set).
- */
-export function weightedTotal(classScore, examScore, maxClassScore) {
-  const max = maxClassScore > 0 ? maxClassScore : 100
-  return (classScore / max) * 40 + (examScore / 100) * 60
-}
+/** Old name of subjectTotal (shared/grading.js), which also takes the school's class-score weight. */
+export { subjectTotal as weightedTotal } from '../../../../shared/grading.js'

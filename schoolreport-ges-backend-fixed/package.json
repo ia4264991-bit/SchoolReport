@@ -14,7 +14,7 @@
     "dev": "npm run dev --workspace=gateway",
     "start": "npm run start --workspace=gateway",
     "migrate": "npm run migrate --workspace=gateway",
-    "test": "node --test --test-concurrency=1 test/api.test.js",
+    "test": "node --test --test-concurrency=1 \"test/*.test.js\"",
     "build": "echo 'No build step required'"
   },
   "dependencies": {

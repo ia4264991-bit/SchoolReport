@@ -1,8 +1,9 @@
 import { Router } from 'express'
 import { query, withTransaction } from '../../../../shared/db.js'
-import { ah, HttpError, isUuid, requiredStr, idParam, dateOrNull } from '../../../../shared/http.js'
+import { ah, HttpError, isUuid, str, requiredStr, idParam, dateOrNull } from '../../../../shared/http.js'
 import { audit, changes } from '../../../../shared/audit.js'
-import { requireAuth, requireRole, requireSchool, assertClassAccess } from '../middleware/auth.js'
+import { requireAuth, requireRole, requireSchool, assertClassAccess, TEACHING_ROLES } from '../middleware/auth.js'
+import { normalizeGhanaPhone } from '../../../../shared/phone.js'
 import { GENDERS, studentToApi } from '../models/Student.js'
 
 const router = Router()
@@ -11,6 +12,21 @@ router.use(requireAuth, requireSchool)
 
 const sid = (req) => req.user.schoolId
 const MAX_BULK = 500
+
+/** '' / null → null; otherwise a Ghana phone number, stored as +233XXXXXXXXX. */
+function phoneOrNull(value, field) {
+  if (value === undefined || value === null || String(value).trim() === '') return null
+  const p = normalizeGhanaPhone(value)
+  if (!p) throw new HttpError(400, `${field} must be a Ghana phone number, e.g. 024 412 3456.`)
+  return p
+}
+
+const INSERT_SQL = `INSERT INTO students (school_id, class_id, full_name, gender, date_of_birth, guardian_name, guardian_phone, guardian_phone2)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`
+const insertParams = (req, f) => [sid(req), f.class_id, f.full_name, f.gender, f.date_of_birth,
+  f.guardian_name ?? '', f.guardian_phone ?? null, f.guardian_phone2 ?? null]
+
+const notStaff = (req) => !TEACHING_ROLES.includes(req.user.role)
 
 /** Validates a student body. For teachers the class is always their own. */
 async function studentFields(req, b, { partial = false } = {}) {
@@ -21,6 +37,10 @@ async function studentFields(req, b, { partial = false } = {}) {
     out.gender = b.gender
   }
   if (!partial || b.dateOfBirth !== undefined) out.date_of_birth = dateOrNull(b.dateOfBirth, 'Date of birth')
+  if (!partial || b.guardianName !== undefined) out.guardian_name = str(b.guardianName, 'Parent / guardian name', { max: 120 })
+  if (!partial || b.guardianPhone !== undefined) out.guardian_phone = phoneOrNull(b.guardianPhone, 'Parent phone')
+  if (!partial || b.guardianPhone2 !== undefined) out.guardian_phone2 = phoneOrNull(b.guardianPhone2, 'Second parent phone')
+  if (out.guardian_phone2 && out.guardian_phone2 === out.guardian_phone) out.guardian_phone2 = null
 
   if (req.user.role === 'teacher') {
     if (!req.user.classId) throw new HttpError(403, 'You have no class assigned. Ask your admin.')
@@ -52,7 +72,7 @@ async function findStudent(req) {
 
 /* GET /api/students?classId=xxx */
 router.get('/', ah(async (req, res) => {
-  if (req.user.role === 'student') throw new HttpError(403, 'Student accounts cannot view the class roster.')
+  if (notStaff(req)) throw new HttpError(403, 'Your account cannot view the class roster.')
 
   let classId = req.query.classId || null
   if (req.user.role === 'teacher') {
@@ -74,18 +94,14 @@ router.get('/', ah(async (req, res) => {
 
 /* GET /api/students/:id */
 router.get('/:id', ah(async (req, res) => {
-  if (req.user.role === 'student') throw new HttpError(403, 'Student accounts cannot view student records.')
+  if (notStaff(req)) throw new HttpError(403, 'Your account cannot view student records.')
   res.json(studentToApi(await findStudent(req)))
 }))
 
 /* POST /api/students */
 router.post('/', requireRole('admin', 'head', 'teacher'), ah(async (req, res) => {
   const f = await studentFields(req, req.body || {})
-  const { rows } = await query(
-    `INSERT INTO students (school_id, class_id, full_name, gender, date_of_birth)
-     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-    [sid(req), f.class_id, f.full_name, f.gender, f.date_of_birth]
-  )
+  const { rows } = await query(INSERT_SQL, insertParams(req, f))
   await audit(req, 'student.create', { targetType: 'student', targetId: rows[0].id, details: { name: f.full_name, classId: f.class_id } })
   res.status(201).json(studentToApi(rows[0]))
 }))
@@ -109,11 +125,7 @@ router.post('/bulk', requireRole('admin', 'head'), ah(async (req, res) => {
   const created = await withTransaction(async (db) => {
     const out = []
     for (const f of prepared) {
-      const { rows } = await db.query(
-        `INSERT INTO students (school_id, class_id, full_name, gender, date_of_birth)
-         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-        [sid(req), f.class_id, f.full_name, f.gender, f.date_of_birth]
-      )
+      const { rows } = await db.query(INSERT_SQL, insertParams(req, f))
       out.push(studentToApi(rows[0]))
     }
     await audit(req, 'student.bulk_create', { db, details: { count: out.length } })

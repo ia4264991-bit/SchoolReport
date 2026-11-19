@@ -67,7 +67,7 @@ async function findSchoolUser(req) {
 router.get('/', requireAuth, requireRole('admin', 'superadmin'), ah(async (req, res) => {
   const { rows } = req.user.role === 'superadmin'
     ? await query(`SELECT ${USER_COLUMNS} FROM users ORDER BY created_at DESC`)
-    : await query(`SELECT ${USER_COLUMNS} FROM users WHERE school_id = $1 ORDER BY created_at DESC`, [req.user.schoolId])
+    : await query(`SELECT ${USER_COLUMNS} FROM users WHERE school_id = $1 AND role <> 'parent' ORDER BY created_at DESC`, [req.user.schoolId])
   res.json(rows.map(userToApi))
 }))
 
@@ -121,6 +121,9 @@ router.put('/:id', requireAuth, requireRole('admin'), ah(async (req, res) => {
   const target = await findSchoolUser(req)
   const b = req.body || {}
   const isSelf = target.id === req.user.id
+  if (target.role === 'parent' && (b.role !== undefined || b.email !== undefined)) {
+    throw new HttpError(400, "A parent's login comes from the phone number on their child's record; change it there.")
+  }
 
   const fields = {}
   if (b.fullName !== undefined) fields.full_name = requiredStr(b.fullName, 'Full name')
@@ -184,6 +187,7 @@ router.delete('/:id', requireAuth, requireRole('admin'), ah(async (req, res) => 
 /* POST /api/users/:id/reset-password — admin sets a new temporary password */
 router.post('/:id/reset-password', requireAuth, requireRole('admin'), ah(async (req, res) => {
   const target = await findSchoolUser(req)
+  if (target.role === 'parent') throw new HttpError(400, 'Parents sign in with an SMS code; they have no password.')
   const newPassword = generateTempPassword()
   // token_version + 1 signs the user out of every session.
   await query(

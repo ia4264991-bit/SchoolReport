@@ -2,10 +2,11 @@ import bcrypt from 'bcryptjs'
 import crypto from 'node:crypto'
 
 /** Columns safe to send to the browser (no password or reset-code fields). */
-export const USER_COLUMNS = `id, full_name, email, username, role, school_id, class_id, student_id, notes,
+export const USER_COLUMNS = `id, full_name, email, phone, username, role, school_id, class_id, student_id, notes,
   is_active, must_change_password, created_at, updated_at`
 
-export const SCHOOL_ROLES = ['admin', 'head', 'teacher', 'student']
+// Roles an admin can create. Parent logins are created automatically from pupils' guardian phones.
+export const SCHOOL_ROLES = ['admin', 'head', 'teacher', 'bursar', 'student']
 
 export const PASSWORD_MIN = 8
 export const PASSWORD_MAX = 72 // bcrypt ignores anything past 72 bytes
@@ -34,6 +35,7 @@ export function userToApi(row) {
     _id: row.id,
     fullName: row.full_name,
     email: row.email,
+    phone: row.phone ?? null,
     username: row.username,
     role: row.role,
     schoolId: row.school_id,

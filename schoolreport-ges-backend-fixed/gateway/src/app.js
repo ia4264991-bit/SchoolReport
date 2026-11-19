@@ -15,6 +15,14 @@ import auditRoutes      from '../../services/auth/src/routes/audit.js'
 import schoolRoutes     from '../../services/school/src/routes/school.js'
 import studentRoutes    from '../../services/students/src/routes/students.js'
 import { scoresRouter, reportsRouter } from '../../services/reports/src/routes/reports.js'
+import attendanceRoutes from '../../services/students/src/routes/attendance.js'
+import parentAuthRoutes from '../../services/auth/src/routes/parentAuth.js'
+import parentRoutes     from '../../services/auth/src/routes/parent.js'
+import signupRoutes     from '../../services/auth/src/routes/signup.js'
+import messageRoutes    from '../../services/school/src/routes/messages.js'
+import feeRoutes        from '../../services/school/src/routes/fees.js'
+import billingRoutes    from '../../services/school/src/routes/billing.js'
+import paymentRoutes, { paystackWebhook } from '../../services/school/src/routes/payments.js'
 
 /**
  * Only CloudFront knows ORIGIN_VERIFY_SECRET (it adds it as a header on every request it
@@ -71,6 +79,9 @@ export function createApp() {
     message: { message: 'Too many requests. Please slow down and try again in a minute.' },
   }))
 
+  // Paystack signs the raw request bytes, so its webhook must see them before JSON parsing.
+  app.post('/api/payments/paystack/webhook', express.raw({ type: () => true, limit: '256kb' }), paystackWebhook)
+
   app.use(express.json({ limit: '1mb' }))
 
   // ── Health ────────────────────────────────────────────────────
@@ -85,7 +96,10 @@ export function createApp() {
   app.get('/api/health/ready', ready)
 
   // ── Routes ────────────────────────────────────────────────────
+  app.use('/api/auth/parent', parentAuthRoutes)
   app.use('/api/auth',       authRoutes)
+  app.use('/api/signup',     signupRoutes)
+  app.use('/api/parent',     parentRoutes)
   app.use('/api/superadmin', superadminRoutes)
   app.use('/api/users',      userRoutes)
   app.use('/api/audit',      auditRoutes)
@@ -93,6 +107,11 @@ export function createApp() {
   app.use('/api/students',   studentRoutes)
   app.use('/api/scores',     scoresRouter)
   app.use('/api/reports',    reportsRouter)
+  app.use('/api/attendance', attendanceRoutes)
+  app.use('/api/messages',   messageRoutes)
+  app.use('/api/fees',       feeRoutes)
+  app.use('/api/billing',    billingRoutes)
+  app.use('/api/payments',   paymentRoutes)
 
   // ── 404 ───────────────────────────────────────────────────────
   app.use((req, res) => {

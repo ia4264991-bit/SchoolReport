@@ -6,6 +6,7 @@ import {
   ah, HttpError, isUuid, str, requiredStr, idParam, dateOrNull, TERMS,
 } from '../../../../shared/http.js'
 import { audit, changes } from '../../../../shared/audit.js'
+import { checkGradingScale, GRADING_PRESETS } from '../../../../shared/grading.js'
 import {
   schoolToApi, settingsToApi, classToApi, subjectToApi, ensureSettings,
 } from '../models/index.js'
@@ -63,30 +64,46 @@ router.put('/settings', requireAuth, requireSchool, requireRole('admin', 'head')
     academic_year:  b.academicYear !== undefined ? requiredStr(b.academicYear, 'Academic year', { max: 20 }) : current.academic_year,
     term:           b.term         !== undefined ? String(b.term) : current.term,
     next_term_date: b.nextTermDate !== undefined ? dateOrNull(b.nextTermDate, 'Next term date') : current.next_term_date,
+    grading_scale:  b.gradingScale !== undefined ? checkGradingScale(b.gradingScale) : current.grading_scale,
+    class_score_weight: b.classScoreWeight !== undefined ? Number(b.classScoreWeight) : current.class_score_weight,
+    sms_absence_alerts: b.smsAbsenceAlerts !== undefined ? b.smsAbsenceAlerts === true : current.sms_absence_alerts,
   }
   if (!TERMS.includes(next.term)) throw new HttpError(400, 'Term must be 1, 2 or 3.')
+  if (!Number.isInteger(next.class_score_weight) || next.class_score_weight < 0 || next.class_score_weight > 100) {
+    throw new HttpError(400, 'The class score share must be a whole number from 0 to 100.')
+  }
 
   const row = await withTransaction(async (db) => {
     const { rows } = await db.query(
       `UPDATE school_settings
           SET school_name = $2, circuit = $3, district = $4, region = $5, head_teacher = $6,
-              academic_year = $7, term = $8, next_term_date = $9
+              academic_year = $7, term = $8, next_term_date = $9,
+              grading_scale = $10, class_score_weight = $11, sms_absence_alerts = $12
         WHERE school_id = $1
         RETURNING *`,
       [sid(req), next.school_name, next.circuit, next.district, next.region,
-       next.head_teacher, next.academic_year, next.term, next.next_term_date]
+       next.head_teacher, next.academic_year, next.term, next.next_term_date,
+       JSON.stringify(next.grading_scale), next.class_score_weight, next.sms_absence_alerts]
     )
     // Keep the platform's school record in step, so the superadmin sees the same name.
     await db.query(
       'UPDATE schools SET name = $2, circuit = $3, district = $4, region = $5 WHERE id = $1',
       [sid(req), next.school_name, next.circuit, next.district, next.region]
     )
-    const diff = changes(current, next)
+    // The scale is an object: compare it as text so only a real change is recorded.
+    const diff = changes(
+      { ...current, grading_scale: JSON.stringify(current.grading_scale) },
+      { ...next, grading_scale: JSON.stringify(next.grading_scale) })
     if (Object.keys(diff).length) await audit(req, 'settings.update', { db, targetType: 'school', targetId: sid(req), details: diff })
     return rows[0]
   })
   res.json(settingsToApi({ ...row, logo_version: await logoVersion(sid(req)) }))
 }))
+
+/* GET /api/school/grading-presets — ready-made scales for the settings editor */
+router.get('/grading-presets', requireAuth, requireSchool, (_req, res) => {
+  res.json(GRADING_PRESETS)
+})
 
 /* ══════════════════════════════════════════════════════
    LOGO (shown on reports and in the app)

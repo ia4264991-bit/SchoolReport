@@ -1,10 +1,13 @@
 import { Router } from 'express'
 import { query, withTransaction } from '../../../../shared/db.js'
-import { ah, HttpError, idParam, termParam, str } from '../../../../shared/http.js'
+import { ah, HttpError, idParam, termParam, str, isUuid } from '../../../../shared/http.js'
+import { ownPupil } from '../../../../shared/family.js'
+import { subjectTotal } from '../../../../shared/grading.js'
+import { buildClassReports, buildOneReport } from '../reportCards.js'
 import { audit } from '../../../../shared/audit.js'
-import { requireAuth, requireRole, requireSchool, assertClassAccess } from '../middleware/auth.js'
+import { requireAuth, requireRole, requireSchool, assertClassAccess, TEACHING_ROLES } from '../middleware/auth.js'
 import { ensureSettings } from '../../../school/src/models/index.js'
-import { scoreToApi, weightedTotal } from '../models/Score.js'
+import { scoreToApi } from '../models/Score.js'
 
 // Two routers, mounted in the main server:
 //   scoresRouter  → /api/scores
@@ -21,7 +24,7 @@ async function academicYearFor(req, { allowQuery = true } = {}) {
 
 /** Loads a student of the caller's school and checks the caller may see their class. */
 async function studentWithAccess(req, studentId) {
-  if (req.user.role === 'student') throw new HttpError(403, 'Student accounts cannot view score records.')
+  if (!TEACHING_ROLES.includes(req.user.role)) throw new HttpError(403, 'Your account cannot view score records.')
   const id = idParam(studentId, 'Student')
   const { rows } = await query('SELECT id, class_id FROM students WHERE id = $1 AND school_id = $2', [id, sid(req)])
   const s = rows[0]
@@ -256,66 +259,106 @@ scoresRouter.delete('/:classId/:term', requireRole('admin'), ah(async (req, res)
 export const reportsRouter = Router()
 reportsRouter.use(requireAuth)
 
-/* GET /api/reports/me?term=1&academicYear=2026/2027 — a student login's OWN report.
-   The class ranking is computed here so the student never receives classmates' marks. */
-reportsRouter.get('/me', requireSchool, requireRole('student'), ah(async (req, res) => {
-  if (!req.user.studentId) {
-    throw new HttpError(404, 'Your login is not linked to a student yet. Ask your school admin.')
-  }
+/** term / academicYear from the query, or the school's current ones. */
+async function termAndYear(req) {
   const settings = await ensureSettings(sid(req))
-  const term = req.query.term ? termParam(String(req.query.term)) : settings.term
-  const academicYear = req.query.academicYear
-    ? str(req.query.academicYear, 'Academic year', { max: 20 })
-    : settings.academic_year
-
-  const { rows: [student] } = await query(
-    `SELECT s.id, s.full_name, s.gender, s.date_of_birth, s.class_id, c.name AS class_name, c.level AS class_level
-       FROM students s LEFT JOIN classes c ON c.id = s.class_id
-      WHERE s.id = $1 AND s.school_id = $2 AND s.is_active`,
-    [req.user.studentId, sid(req)]
-  )
-  if (!student) throw new HttpError(404, 'Your student record is no longer active. Ask your school admin.')
-
-  const { rows: subjects } = await query(
-    'SELECT id, name, max_class_score FROM subjects WHERE school_id = $1 ORDER BY sort_order, name',
-    [sid(req)]
-  )
-  // Every active classmate's scores for this term — used only to compute the ranking.
-  const { rows: classScores } = await query(
-    `SELECT st.id AS student_id, sc.subject_id, sc.class_score, sc.exam_score
-       FROM students st
-       LEFT JOIN scores sc ON sc.student_id = st.id AND sc.academic_year = $3 AND sc.term = $4
-      WHERE st.school_id = $1 AND st.class_id = $2 AND st.is_active`,
-    [sid(req), student.class_id, academicYear, term]
-  )
-
-  // Average of the weighted subject totals (a missing score counts as 0) — the same rule as
-  // the Reports page; averages equal to one decimal share a position (1st, 2nd, 2nd, 4th).
-  const maxBySubject = new Map(subjects.map((s) => [s.id, s.max_class_score]))
-  const totals = new Map()
-  for (const r of classScores) {
-    if (!totals.has(r.student_id)) totals.set(r.student_id, 0)
-    if (r.subject_id && maxBySubject.has(r.subject_id)) {
-      totals.set(r.student_id, totals.get(r.student_id) + weightedTotal(r.class_score, r.exam_score, maxBySubject.get(r.subject_id)))
-    }
+  return {
+    term: req.query.term ? termParam(String(req.query.term)) : settings.term,
+    academicYear: req.query.academicYear ? str(req.query.academicYear, 'Academic year', { max: 20 }) : settings.academic_year,
   }
-  const avg = (id) => (subjects.length ? totals.get(id) / subjects.length : 0)
-  const rounded = (id) => Math.round(avg(id) * 10)
-  const mine = rounded(student.id)
-  const position = 1 + [...totals.keys()].filter((id) => rounded(id) > mine).length
+}
 
-  res.json({
-    academicYear,
-    term,
-    student: { fullName: student.full_name, gender: student.gender, dateOfBirth: student.date_of_birth },
-    class: { name: student.class_name || '', level: student.class_level || '' },
-    subjects: subjects.map((s) => ({ _id: s.id, name: s.name, maxClassScore: s.max_class_score })),
-    scores: classScores
-      .filter((r) => r.student_id === student.id && r.subject_id)
-      .map((r) => ({ subjectId: r.subject_id, classScore: r.class_score, examScore: r.exam_score })),
-    position,
-    classSize: totals.size,
+/* GET /api/reports/me?term=&academicYear=&studentId= — a student login's own report, or a
+   parent's child's report (studentId picks the child). Only that pupil's card is returned;
+   the class ranking is computed on the server, so no classmate's marks reach the browser. */
+reportsRouter.get('/me', requireSchool, requireRole('student', 'parent'), ah(async (req, res) => {
+  const studentId = await ownPupil(req, req.query.studentId)
+  res.json(await buildOneReport({ schoolId: sid(req), studentId, ...(await termAndYear(req)) }))
+}))
+
+/* GET /api/reports/cards/:classId/:term?academicYear= — every pupil's full report card
+   (staff: viewing, printing all reports, the broadsheet) */
+reportsRouter.get('/cards/:classId/:term', requireSchool, ah(async (req, res) => {
+  const cls = await assertClassAccess(req, req.params.classId)
+  const term = termParam(req.params.term)
+  const academicYear = req.query.academicYear ? str(req.query.academicYear, 'Academic year', { max: 20 }) : undefined
+  res.json(await buildClassReports({ schoolId: sid(req), classId: cls.id, academicYear, term }))
+}))
+
+// Hand-written parts of the report. Class teachers write conduct, attitude, interest, their
+// remark and promotion; only the head teacher or admin writes the head teacher's remark.
+const REMARK_FIELDS = {
+  conduct: 'conduct', attitude: 'attitude', interest: 'interest',
+  teacherRemark: 'teacher_remark', headRemark: 'head_remark', promotedTo: 'promoted_to',
+}
+const REMARK_MAX = { conduct: 60, attitude: 60, interest: 60, teacherRemark: 300, headRemark: 300, promotedTo: 40 }
+
+/* GET /api/reports/remarks/:classId/:term?academicYear= → { studentId: { conduct, … } } */
+reportsRouter.get('/remarks/:classId/:term', requireSchool, ah(async (req, res) => {
+  const cls = await assertClassAccess(req, req.params.classId)
+  const term = termParam(req.params.term)
+  const academicYear = await academicYearFor(req)
+  const { rows } = await query(
+    `SELECT r.* FROM report_remarks r JOIN students s ON s.id = r.student_id
+      WHERE r.school_id = $1 AND s.class_id = $2 AND r.academic_year = $3 AND r.term = $4`,
+    [sid(req), cls.id, academicYear, term]
+  )
+  const out = {}
+  for (const r of rows) {
+    out[r.student_id] = Object.fromEntries(Object.entries(REMARK_FIELDS).map(([k, col]) => [k, r[col]]))
+  }
+  res.json(out)
+}))
+
+/* PUT /api/reports/remarks/:classId/:term  { remarks: { studentId: { conduct?, …, headRemark? } } }
+   Saves for the school's current academic year. Fields left out are kept. */
+reportsRouter.put('/remarks/:classId/:term', requireSchool, ah(async (req, res) => {
+  const cls = await assertClassAccess(req, req.params.classId)
+  const term = termParam(req.params.term)
+  const input = req.body?.remarks
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new HttpError(400, 'Send remarks as { studentId: { conduct, attitude, interest, teacherRemark, headRemark, promotedTo } }.')
+  }
+  const academicYear = await academicYearFor(req, { allowQuery: false })
+  const { rows: pupils } = await query(
+    'SELECT id, full_name FROM students WHERE school_id = $1 AND class_id = $2 AND is_active', [sid(req), cls.id]
+  )
+  const names = new Map(pupils.map((p) => [p.id, p.full_name]))
+  const isTeacher = req.user.role === 'teacher'
+
+  const updates = []
+  for (const [studentId, fields] of Object.entries(input)) {
+    if (!isUuid(studentId) || !names.has(studentId)) throw new HttpError(400, 'A pupil in the remarks is not in this class.')
+    if (!fields || typeof fields !== 'object') continue
+    const clean = {}
+    for (const [k, v] of Object.entries(fields)) {
+      if (!(k in REMARK_FIELDS)) continue
+      if (k === 'headRemark' && isTeacher) throw new HttpError(403, "Only the head teacher or admin can write the head teacher's remark.")
+      clean[k] = str(v, k, { max: REMARK_MAX[k] })
+    }
+    if (Object.keys(clean).length) updates.push([studentId, clean])
+  }
+
+  await withTransaction(async (db) => {
+    for (const [studentId, clean] of updates) {
+      const cols = Object.keys(clean).map((k) => REMARK_FIELDS[k])
+      const vals = Object.values(clean)
+      await db.query(
+        `INSERT INTO report_remarks (school_id, student_id, academic_year, term, ${cols.join(', ')})
+         VALUES ($1, $2, $3, $4, ${cols.map((_, i) => `$${i + 5}`).join(', ')})
+         ON CONFLICT (student_id, academic_year, term) DO UPDATE
+            SET ${cols.map((c) => `${c} = EXCLUDED.${c}`).join(', ')}`,
+        [sid(req), studentId, academicYear, term, ...vals]
+      )
+    }
+    if (updates.length) {
+      await audit(req, 'remarks.save', {
+        db, targetType: 'class', targetId: cls.id,
+        details: { class: cls.name, academicYear, term, pupils: updates.map(([id, f]) => ({ name: names.get(id), fields: Object.keys(f) })) },
+      })
+    }
   })
+  res.json({ message: `Remarks saved for ${updates.length} pupil(s).`, saved: updates.length })
 }))
 
 /* GET /api/reports/student/:studentId/:term */
@@ -347,15 +390,16 @@ reportsRouter.get('/school/:schoolId/analytics', requireRole('admin', 'head', 's
   if (!academicYear) return res.json({ totalEntries: 0, avgScore: 0, classBreakdown: {} })
 
   const { rows } = await query(
-    `SELECT sc.class_id, sc.class_score, sc.exam_score, su.max_class_score
+    `SELECT sc.class_id, sc.class_score, sc.exam_score, su.max_class_score, st.class_score_weight
        FROM scores sc JOIN subjects su ON su.id = sc.subject_id
+       JOIN school_settings st ON st.school_id = sc.school_id
       WHERE sc.school_id = $1 AND sc.academic_year = $2`,
     [schoolId, academicYear]
   )
   let sum = 0
   const classBreakdown = {}
   for (const r of rows) {
-    const t = weightedTotal(r.class_score, r.exam_score, r.max_class_score)
+    const t = subjectTotal(r.class_score, r.exam_score, r.max_class_score, r.class_score_weight)
     sum += t
     const c = (classBreakdown[r.class_id] ||= { count: 0, total: 0 })
     c.count++
