@@ -1,8 +1,78 @@
 import { useEffect, useState } from 'react'
-import api from '@/lib/api'
-import { Card, SectionHeader, Button, Table, Tr, Td, Badge, Modal, Field, Input, Spinner, EmptyState, Alert, PageHeader } from '@/components/ui'
-import { Building2, Plus, ToggleLeft, ToggleRight, CheckCircle, XCircle, Copy, Eye, EyeOff } from 'lucide-react'
+import api, { errorMessage } from '@/lib/api'
+import { formatDate, cedis } from '@/lib/format'
+import { Card, SectionHeader, Button, Table, Tr, Td, Badge, Modal, Field, Input, Select, Spinner, EmptyState, Alert, PageHeader } from '@/components/ui'
+import { Building2, Plus, ToggleLeft, ToggleRight, CheckCircle, XCircle, Copy, Eye, EyeOff, CreditCard } from 'lucide-react'
 import toast from 'react-hot-toast'
+
+const PLAN_BADGE = {
+  complimentary: ['blue', 'Complimentary'],
+  trial: ['amber', 'Trial'],
+  paid: ['green', 'Paid'],
+}
+const STATUS_BADGE = { active: 'green', grace: 'amber', locked: 'red' }
+
+/** Plan, trial / paid dates, SMS allowance, Paystack subaccount; record a payment made outside the app. */
+function BillingModal({ school, onClose, onSaved }) {
+  const [f, setF] = useState({
+    plan: school.plan,
+    trialEndsAt: school.trialEndsAt ? school.trialEndsAt.slice(0, 10) : '',
+    paidUntil: school.paidUntil || '',
+    smsMonthlyLimit: String(school.smsMonthlyLimit ?? 500),
+    paystackSubaccount: school.paystackSubaccount || '',
+  })
+  const [pay, setPay] = useState({ amount: '', months: '4', reference: '', note: '' })
+  const [busy, setBusy] = useState(false)
+  const set = (k) => (e) => setF((x) => ({ ...x, [k]: e.target.value }))
+
+  const save = async () => {
+    setBusy(true)
+    try {
+      await api.put(`/superadmin/schools/${school._id}/billing`, { ...f, smsMonthlyLimit: Number(f.smsMonthlyLimit) })
+      toast.success('Saved'); onSaved()
+    } catch (e) { toast.error(errorMessage(e, 'Could not save')) } finally { setBusy(false) }
+  }
+  const record = async () => {
+    if (!(Number(pay.amount) > 0)) return toast.error('Enter the amount received.')
+    if (!confirm(`Record ${cedis(pay.amount)} from ${school.name} for ${pay.months} month(s)?`)) return
+    setBusy(true)
+    try {
+      const { data } = await api.post(`/superadmin/schools/${school._id}/payments`, { ...pay, months: Number(pay.months) })
+      toast.success(`Recorded. Paid until ${formatDate(data.periodEnd)}.`); onSaved()
+    } catch (e) { toast.error(errorMessage(e, 'Could not record the payment')) } finally { setBusy(false) }
+  }
+
+  return (
+    <Modal open onClose={onClose} title={`${school.name} — plan & payments`}
+      footer={<><Button onClick={onClose}>Close</Button><Button variant="primary" onClick={save} disabled={busy}>Save plan</Button></>}>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3">
+        <Field label="Plan">
+          <Select value={f.plan} onChange={set('plan')}>
+            <option value="complimentary">Complimentary (never locked)</option>
+            <option value="trial">Trial</option>
+            <option value="paid">Paid</option>
+          </Select>
+        </Field>
+        {f.plan === 'trial' && <Field label="Trial ends"><Input type="date" value={f.trialEndsAt} onChange={set('trialEndsAt')} /></Field>}
+        {f.plan === 'paid' && <Field label="Paid until"><Input type="date" value={f.paidUntil} onChange={set('paidUntil')} /></Field>}
+        <Field label="SMS per month"><Input type="number" min="0" value={f.smsMonthlyLimit} onChange={set('smsMonthlyLimit')} /></Field>
+        <Field label="Paystack subaccount (school fees)"><Input value={f.paystackSubaccount} placeholder="ACCT_xxxxxxxx" onChange={set('paystackSubaccount')} /></Field>
+      </div>
+      <p className="text-xs text-gray-400 -mt-1 mb-4">The subaccount is created in your Paystack dashboard with the school's own bank or MoMo account, so parents' fee payments settle straight to the school.</p>
+
+      <div className="border-t border-border pt-3">
+        <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">Record a subscription payment (cash, bank, MoMo)</p>
+        <div className="grid grid-cols-2 gap-x-3">
+          <Field label="Amount (GHS)"><Input type="number" min="0.01" step="0.01" value={pay.amount} onChange={(e) => setPay((p) => ({ ...p, amount: e.target.value }))} /></Field>
+          <Field label="Months"><Input type="number" min="1" max="24" value={pay.months} onChange={(e) => setPay((p) => ({ ...p, months: e.target.value }))} /></Field>
+          <Field label="Reference"><Input value={pay.reference} maxLength={80} onChange={(e) => setPay((p) => ({ ...p, reference: e.target.value }))} /></Field>
+          <Field label="Note"><Input value={pay.note} maxLength={200} onChange={(e) => setPay((p) => ({ ...p, note: e.target.value }))} /></Field>
+        </div>
+        <Button variant="success" onClick={record} disabled={busy}><CreditCard className="w-3.5 h-3.5" /> Record payment</Button>
+      </div>
+    </Modal>
+  )
+}
 
 export default function SuperAdminPage() {
   const [schools, setSchools] = useState([])
@@ -13,6 +83,7 @@ export default function SuperAdminPage() {
   const [showPw,  setShowPw]  = useState(false)
   const [form, setForm] = useState({ schoolName:'', schoolEmail:'', adminName:'', adminEmail:'', circuit:'', district:'', region:'' })
   const [err, setErr] = useState('')
+  const [billing, setBilling] = useState(null)
 
   const load = async () => {
     try { const { data } = await api.get('/superadmin/schools'); setSchools(data) }
@@ -69,7 +140,7 @@ export default function SuperAdminPage() {
     try {
       const { data } = await api.put(`/superadmin/schools/${id}/toggle`)
       toast.success(data.message)
-      setSchools(ss => ss.map(s => s._id === id ? data.school : s))
+      load()
     } catch (e) { toast.error(e.response?.data?.message || 'Failed to update school') }
   }
 
@@ -78,13 +149,13 @@ export default function SuperAdminPage() {
       <PageHeader title="Platform Control" subtitle="Manage all schools on SchoolReport GES" />
 
       <div className="grid grid-cols-3 gap-3 mb-5">
-        {[['Total', schools.length, 'bg-blue-light text-blue'],
-          ['Active', schools.filter(s=>s.isActive).length, 'bg-green-light text-green'],
-          ['Inactive', schools.filter(s=>!s.isActive).length, 'bg-red-light text-red']
+        {[['Schools', schools.length, 'bg-blue-light text-blue'],
+          ['Paying', schools.filter(s=>s.plan==='paid' && s.subscription?.status==='active').length, 'bg-green-light text-green'],
+          ['On trial', schools.filter(s=>s.plan==='trial' && s.subscription?.status!=='locked').length, 'bg-amber-light text-amber'],
         ].map(([l,v,c]) => (
           <div key={l} className={`rounded-xl p-4 text-center ${c}`}>
             <div className="text-2xl font-bold">{v}</div>
-            <div className="text-xs mt-0.5 opacity-80">{l} Schools</div>
+            <div className="text-xs mt-0.5 opacity-80">{l}</div>
           </div>
         ))}
       </div>
@@ -96,7 +167,7 @@ export default function SuperAdminPage() {
         {loading ? <Spinner /> : schools.length === 0 ? (
           <EmptyState icon={Building2} title="No schools yet" description="Create your first school to get started." />
         ) : (
-          <Table headers={['School','Email','Region','Status','']}>
+          <Table headers={['School','Plan','Pupils','SMS this month','Status','']}>
             {schools.map(s => (
               <Tr key={s._id}>
                 <Td>
@@ -110,23 +181,37 @@ export default function SuperAdminPage() {
                     </div>
                   </div>
                 </Td>
-                <Td className="text-gray-500 text-xs">{s.email}</Td>
-                <Td className="text-gray-500 text-sm">{s.region || '—'}</Td>
+                <Td>
+                  <Badge variant={PLAN_BADGE[s.plan]?.[0] || 'gray'}>{PLAN_BADGE[s.plan]?.[1] || s.plan}</Badge>
+                  {s.subscription?.status !== 'active' && <Badge variant={STATUS_BADGE[s.subscription?.status] || 'gray'} className="ml-1">{s.subscription?.status}</Badge>}
+                  <div className="text-[10px] text-gray-400 mt-0.5">
+                    {s.plan === 'trial' && s.trialEndsAt && `trial to ${formatDate(s.trialEndsAt)}`}
+                    {s.plan === 'paid' && s.paidUntil && `paid to ${formatDate(s.paidUntil)}`}
+                    {s.signupSource === 'self' && ' · signed up online'}
+                  </div>
+                </Td>
+                <Td className="text-gray-500 text-sm">{s.pupils ?? '—'}</Td>
+                <Td className="text-gray-500 text-xs">{s.smsUsedThisMonth ?? 0} / {s.smsMonthlyLimit}</Td>
                 <Td>{s.isActive
                   ? <Badge variant="green"><CheckCircle className="w-3 h-3 inline mr-1"/>Active</Badge>
                   : <Badge variant="red"><XCircle className="w-3 h-3 inline mr-1"/>Inactive</Badge>}
                 </Td>
                 <Td>
+                  <div className="flex gap-1.5 justify-end">
+                  <Button size="sm" onClick={() => setBilling(s)}><CreditCard className="w-3.5 h-3.5"/> Plan</Button>
                   <Button size="sm" variant={s.isActive ? 'danger' : 'success'}
                     onClick={() => toggle(s._id, s.name, s.isActive)}>
                     {s.isActive ? <><ToggleLeft className="w-3.5 h-3.5"/> Deactivate</> : <><ToggleRight className="w-3.5 h-3.5"/> Activate</>}
                   </Button>
+                  </div>
                 </Td>
               </Tr>
             ))}
           </Table>
         )}
       </Card>
+
+      {billing && <BillingModal school={billing} onClose={() => setBilling(null)} onSaved={() => { setBilling(null); load() }} />}
 
       {/* CREATE SCHOOL MODAL */}
       <Modal open={modal} onClose={() => setModal(false)} title="Create New School"

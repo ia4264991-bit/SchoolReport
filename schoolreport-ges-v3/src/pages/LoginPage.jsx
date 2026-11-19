@@ -97,6 +97,14 @@ export default function LoginPage() {
               Forgot your password?
             </Link>
           </div>
+          <div className="mt-5 pt-5 border-t border-border grid grid-cols-1 gap-2">
+            <Link to="/parent-login" className="w-full py-3 rounded-xl border border-[#d0d7e8] text-center text-sm font-semibold text-gray-700 hover:border-blue hover:text-blue">
+              I'm a parent — sign in with my phone
+            </Link>
+            <Link to="/signup" className="text-center text-xs text-gray-500 hover:text-blue">
+              New school? <span className="font-semibold text-blue">Start a free trial</span>
+            </Link>
+          </div>
         </div>
       </div>
 

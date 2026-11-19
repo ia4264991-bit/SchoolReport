@@ -78,6 +78,29 @@ refused once, so open a new Support case: Service limit increase → SES Sending
 2. In `params.prod.json`: `SmtpSecretArn` = that secret, `SmtpHost = email-smtp.<region>.amazonaws.com`;
    run `deploy-stack.sh`, then `release.sh`.
 
+## SMS to parents (Arkesel)
+
+Off until set up (the app then only logs what it would send; notices still show in the parent app).
+1. Open an account at arkesel.com, buy SMS credit, register a sender name (max 11 characters, e.g.
+   `SchoolRprt`), and create an API key.
+2. `aws secretsmanager create-secret --name schoolreport/prod/sms --secret-string '{"apiKey":"…"}'`
+   (put the key on the clipboard and paste it into the command; never in chat or files).
+3. In `params.prod.json`: `SmsProvider=arkesel`, `SmsSenderId=<sender name>`, `SmsSecretArn=<secret ARN>`;
+   `deploy-stack.sh`, then `release.sh`.
+Each school has a monthly SMS allowance (default 500), changed per school on the Platform page.
+
+## Online payment (Paystack)
+
+Off until set up. Needs a Paystack business account that has passed verification (live keys).
+1. `aws secretsmanager create-secret --name schoolreport/prod/paystack --secret-string '{"secretKey":"sk_live_…"}'`
+2. `params.prod.json`: `PaystackSecretArn=<secret ARN>`; `deploy-stack.sh`, then `release.sh`.
+3. Paystack dashboard → Settings → API Keys & Webhooks → Webhook URL:
+   `https://api.schoolreport.online/api/payments/paystack/webhook`
+4. School fees: for each school that wants online fees, create a **subaccount** in Paystack with the
+   school's own bank or MoMo account (Paystack sends the money there directly), then paste its code
+   (`ACCT_…`) on the Platform page → Plan. The school admin can still switch online fees off.
+Subscription prices: `PricePerPupil`, `MinTermPrice`, `TrialDays`, `SubscriptionTermMonths` parameters.
+
 ## Custom domain (later)
 
 Request an ACM certificate in us-east-1 for `api.<domain>`, add it and the alias to the CloudFront

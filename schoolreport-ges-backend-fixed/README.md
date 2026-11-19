@@ -1,6 +1,8 @@
 # SchoolReport GES
 
-Ghana Education Service automated report system: score entry, GES grading (A1–F9) and printable terminal reports.
+School management for Ghanaian basic schools, run as a service: daily attendance register, score entry,
+terminal reports with each school's grading scale (NaCCA proficiency levels by default), parents by phone
+and SMS, school fees with receipts and MoMo, and self sign-up with a free trial.
 **React + Node.js + Express + PostgreSQL**
 
 ---
@@ -140,7 +142,18 @@ classmate's marks ever reach the browser. Removing the student deactivates the l
 | PUT | `/scores/:id` · DELETE `/scores/:classId/:term` (admin) | staff |
 | GET | `/reports/class/:classId/:term` · `/reports/student/:studentId/:term` | staff |
 | GET | `/reports/school/:schoolId/analytics` | admin, head, superadmin |
-| GET | `/reports/me?term=` | student logins: their own report + position only |
+| GET | `/reports/me?term=&studentId=` | student logins: own report; parents: their child's (card only, ranking computed server-side) |
+| GET | `/reports/cards/:classId/:term` · GET/PUT `/reports/remarks/:classId/:term` | staff (head's remark: head, admin) |
+| GET | `/attendance/overview` (admin, head) · `/attendance/:classId?day=` · `/attendance/:classId/register?term=` | staff |
+| PUT/DELETE | `/attendance/:classId/:day` | teachers: today + 7 days back, edit same day; head/admin: any day; delete: head/admin |
+| GET/POST | `/messages/usage` · `/messages/notices` · `/messages/results/:classId/:term` | admin, head |
+| * | `/fees/items` · `/fees/bill` · `/fees/charges` · `/fees/classes/:id` · `/fees/students/:id` · `/fees/payments` · `/fees/summary` · `/fees/reminders` | admin, bursar (head: read) |
+| POST | `/auth/parent/request-code` · `/auth/parent/verify` | anyone (parents sign in by SMS code) |
+| GET/POST | `/parent/children` · `/parent/children/:id/attendance\|fees` · `/parent/children/:id/fees/pay` · `/parent/notices` | parents |
+| POST | `/signup/start` · `/signup/verify` | anyone (new school, free trial) |
+| GET/POST | `/billing` · `/billing/pay` | admin (head: read) |
+| GET / POST | `/payments/paystack/verify/:reference` (payer) · `/payments/paystack/webhook` (Paystack, signed) | |
+| PUT/POST | `/superadmin/schools/:id/billing` · `/superadmin/schools/:id/payments` | superadmin |
 | GET | `/school/logo` | school users · PUT (raw PNG/JPEG/WebP ≤ 512 KB) and DELETE: admin, head |
 | GET | `/audit?limit=&before=&action=&targetType=&targetId=` | admin (own school), superadmin (all) |
 | GET | `/health` (database check) · `/health/live` (process only) | anyone |
@@ -175,8 +188,12 @@ Score reads use the school's current academic year; add `?academicYear=2025/2026
 ## 🔜 Next steps
 
 - [x] Link student logins to a student record so students can see their own report
+- [x] Daily attendance register (roll call + quick list, works offline), term register printout
+- [x] Conduct / attitude / interest and remarks; grading scale per school; broadsheet; print all reports
+- [x] Import pupils from Excel/CSV
+- [x] Parents by phone + SMS code; absence alerts, notices, results and fee reminders by SMS
+- [x] School fees: items, billing, receipts, voiding, MoMo online payment (Paystack subaccounts)
+- [x] Self sign-up, free trial, per-term subscription, read-only after non-payment
 - [ ] Choose a past academic year on the Scores and Reports pages (the API already supports it)
-- [ ] Affective skills & psychomotor scoring; class teacher / head teacher remarks
-- [ ] PDF export of reports
-- [ ] Bulk student import from Excel/CSV (the `/students/bulk` endpoint exists)
 - [ ] Class promotion at the end of the year
+- [ ] Staff attendance; timetable; lesson notes

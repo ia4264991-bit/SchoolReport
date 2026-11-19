@@ -22,6 +22,11 @@ tags:
   - { name: students }
   - { name: scores }
   - { name: reports }
+  - { name: attendance }
+  - { name: messages }
+  - { name: fees }
+  - { name: parents }
+  - { name: saas }
   - { name: health }
 
 paths:
@@ -296,9 +301,10 @@ paths:
   /api/reports/me:
     get:
       tags: [reports]
-      summary: A student login's own report (student role only)
+      summary: A student login's own report, or a parent's child's (studentId)
       parameters:
         - { name: term, in: query, schema: { type: string, enum: ['1', '2', '3'], example: '1' } }
+        - { name: studentId, in: query, schema: { type: string, format: uuid } }
         - { $ref: '#/components/parameters/academicYear' }
       responses: { '200': { $ref: '#/components/responses/Ok' }, '403': { $ref: '#/components/responses/Error' }, '404': { $ref: '#/components/responses/Error' } }
   /api/reports/student/{studentId}/{term}:
@@ -317,6 +323,333 @@ paths:
       parameters: [{ $ref: '#/components/parameters/schoolIdParam' }, { $ref: '#/components/parameters/academicYear' }]
       responses: { '200': { $ref: '#/components/responses/Ok' }, '403': { $ref: '#/components/responses/Error' } }
 
+  /api/reports/cards/{classId}/{term}:
+    get:
+      tags: [reports]
+      summary: Every pupil's full report card for a class (staff)
+      parameters: [{ $ref: '#/components/parameters/classIdParam' }, { $ref: '#/components/parameters/term' }, { $ref: '#/components/parameters/academicYear' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '403': { $ref: '#/components/responses/Error' } }
+  /api/reports/remarks/{classId}/{term}:
+    get:
+      tags: [reports]
+      parameters: [{ $ref: '#/components/parameters/classIdParam' }, { $ref: '#/components/parameters/term' }, { $ref: '#/components/parameters/academicYear' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+    put:
+      tags: [reports]
+      parameters: [{ $ref: '#/components/parameters/classIdParam' }, { $ref: '#/components/parameters/term' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                remarks:
+                  type: object
+                  description: "{ studentId: { conduct, attitude, interest, teacherRemark, headRemark, promotedTo } }"
+                  additionalProperties: { $ref: '#/components/schemas/Remarks' }
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '400': { $ref: '#/components/responses/Error' } }
+
+  # ── attendance ────────────────────────────────────────────────────────
+  /api/attendance/overview:
+    get:
+      tags: [attendance]
+      parameters: [{ $ref: '#/components/parameters/dayQuery' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /api/attendance/{classId}:
+    get:
+      tags: [attendance]
+      parameters: [{ $ref: '#/components/parameters/classIdParam' }, { $ref: '#/components/parameters/dayQuery' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /api/attendance/{classId}/register:
+    get:
+      tags: [attendance]
+      parameters:
+        - { $ref: '#/components/parameters/classIdParam' }
+        - { name: term, in: query, schema: { type: string, enum: ['1', '2', '3'] } }
+        - { $ref: '#/components/parameters/academicYear' }
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /api/attendance/{classId}/{day}:
+    put:
+      tags: [attendance]
+      parameters: [{ $ref: '#/components/parameters/classIdParam' }, { $ref: '#/components/parameters/dayPath' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                marks: { type: object, additionalProperties: { type: string, enum: [present, absent] }, description: "{ studentId: present | absent }" }
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '400': { $ref: '#/components/responses/Error' }, '403': { $ref: '#/components/responses/Error' } }
+    delete:
+      tags: [attendance]
+      parameters: [{ $ref: '#/components/parameters/classIdParam' }, { $ref: '#/components/parameters/dayPath' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '404': { $ref: '#/components/responses/Error' } }
+
+  # ── school extras ─────────────────────────────────────────────────────
+  /api/school/grading-presets:
+    get: { tags: [school], responses: { '200': { $ref: '#/components/responses/Ok' } } }
+
+  # ── messages (notices and SMS) ────────────────────────────────────────
+  /api/messages/usage:
+    get: { tags: [messages], responses: { '200': { $ref: '#/components/responses/Ok' } } }
+  /api/messages/notices:
+    get: { tags: [messages], responses: { '200': { $ref: '#/components/responses/Ok' } } }
+    post:
+      tags: [messages]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, body]
+              properties:
+                title: { type: string, maxLength: 80, example: PTA meeting }
+                body: { type: string, maxLength: 480, example: Friday at 2pm in the school hall. }
+                classId: { type: string, format: uuid }
+                sendSms: { type: boolean, example: false }
+      responses: { '201': { $ref: '#/components/responses/Ok' }, '409': { $ref: '#/components/responses/Error' } }
+  /api/messages/notices/{id}:
+    delete:
+      tags: [messages]
+      parameters: [{ $ref: '#/components/parameters/genericIdPath' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '404': { $ref: '#/components/responses/Error' } }
+  /api/messages/results/{classId}/{term}:
+    get:
+      tags: [messages]
+      summary: Preview of the results SMS
+      parameters: [{ $ref: '#/components/parameters/classIdParam' }, { $ref: '#/components/parameters/term' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+    post:
+      tags: [messages]
+      parameters: [{ $ref: '#/components/parameters/classIdParam' }, { $ref: '#/components/parameters/term' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '400': { $ref: '#/components/responses/Error' } }
+
+  # ── fees ──────────────────────────────────────────────────────────────
+  /api/fees/items:
+    get:
+      tags: [fees]
+      parameters: [{ $ref: '#/components/parameters/termQuery' }, { $ref: '#/components/parameters/academicYear' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+    post:
+      tags: [fees]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/FeeItemInput' } } } }
+      responses: { '201': { $ref: '#/components/responses/Ok' }, '400': { $ref: '#/components/responses/Error' } }
+  /api/fees/items/{id}:
+    put:
+      tags: [fees]
+      parameters: [{ $ref: '#/components/parameters/genericIdPath' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/FeeItemInput' } } } }
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+    delete:
+      tags: [fees]
+      parameters: [{ $ref: '#/components/parameters/genericIdPath' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /api/fees/bill:
+    post:
+      tags: [fees]
+      requestBody:
+        content: { application/json: { schema: { type: object, properties: { classId: { type: string, format: uuid }, term: { type: string, enum: ['1', '2', '3'] } } } } }
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /api/fees/charges:
+    post:
+      tags: [fees]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [studentId, description, amount]
+              properties:
+                studentId: { type: string, format: uuid }
+                description: { type: string, example: Sibling discount }
+                amount: { type: number, example: -50 }
+      responses: { '201': { $ref: '#/components/responses/Ok' } }
+  /api/fees/charges/{id}:
+    delete:
+      tags: [fees]
+      parameters: [{ $ref: '#/components/parameters/genericIdPath' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /api/fees/classes/{classId}:
+    get:
+      tags: [fees]
+      parameters: [{ $ref: '#/components/parameters/classIdParam' }, { $ref: '#/components/parameters/termQuery' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /api/fees/students/{id}:
+    get:
+      tags: [fees]
+      parameters: [{ $ref: '#/components/parameters/studentIdPath' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '404': { $ref: '#/components/responses/Error' } }
+  /api/fees/summary:
+    get:
+      tags: [fees]
+      parameters: [{ $ref: '#/components/parameters/termQuery' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /api/fees/payments:
+    get:
+      tags: [fees]
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+    post:
+      tags: [fees]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [studentId, amount, method]
+              properties:
+                studentId: { type: string, format: uuid }
+                amount: { type: number, example: 100 }
+                method: { type: string, enum: [cash, momo, bank, cheque], example: cash }
+                reference: { type: string }
+                paidOn: { type: string, format: date }
+                note: { type: string }
+      responses: { '201': { $ref: '#/components/responses/Ok' }, '400': { $ref: '#/components/responses/Error' } }
+  /api/fees/payments/{id}:
+    get:
+      tags: [fees]
+      parameters: [{ $ref: '#/components/parameters/genericIdPath' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '404': { $ref: '#/components/responses/Error' } }
+  /api/fees/payments/{id}/void:
+    post:
+      tags: [fees]
+      parameters: [{ $ref: '#/components/parameters/genericIdPath' }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { reason: { type: string, example: Recorded twice } } } } } }
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '404': { $ref: '#/components/responses/Error' } }
+  /api/fees/reminders:
+    get:
+      tags: [fees]
+      parameters: [{ name: classId, in: query, schema: { type: string, format: uuid } }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+    post:
+      tags: [fees]
+      requestBody: { content: { application/json: { schema: { type: object, properties: { classId: { type: string, format: uuid } } } } } }
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '400': { $ref: '#/components/responses/Error' } }
+
+  # ── parents ───────────────────────────────────────────────────────────
+  /api/auth/parent/request-code:
+    post:
+      tags: [parents]
+      security: []
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [phone], properties: { phone: { type: string, example: '0270000000' } } } } } }
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '400': { $ref: '#/components/responses/Error' } }
+  /api/auth/parent/verify:
+    post:
+      tags: [parents]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone, code]
+              properties:
+                phone: { type: string, example: '0270000000' }
+                code: { type: string, example: '000000' }
+                schoolId: { type: string, format: uuid }
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '400': { $ref: '#/components/responses/Error' } }
+  /api/parent/children:
+    get: { tags: [parents], responses: { '200': { $ref: '#/components/responses/Ok' }, '403': { $ref: '#/components/responses/Error' } } }
+  /api/parent/children/{id}/attendance:
+    get:
+      tags: [parents]
+      parameters: [{ $ref: '#/components/parameters/studentIdPath' }, { $ref: '#/components/parameters/termQuery' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '403': { $ref: '#/components/responses/Error' } }
+  /api/parent/children/{id}/fees:
+    get:
+      tags: [parents]
+      parameters: [{ $ref: '#/components/parameters/studentIdPath' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '403': { $ref: '#/components/responses/Error' } }
+  /api/parent/children/{id}/fees/pay:
+    post:
+      tags: [parents]
+      parameters: [{ $ref: '#/components/parameters/studentIdPath' }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { amount: { type: number, example: 50 } } } } } }
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '403': { $ref: '#/components/responses/Error' } }
+  /api/parent/notices:
+    get: { tags: [parents], responses: { '200': { $ref: '#/components/responses/Ok' }, '403': { $ref: '#/components/responses/Error' } } }
+
+  # ── sign-up, billing, payments ────────────────────────────────────────
+  /api/signup/start:
+    post:
+      tags: [saas]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [schoolName, adminName, email, phone, password, acceptTerms]
+              properties:
+                schoolName: { type: string, example: Scan Test Academy }
+                region: { type: string, example: Ashanti }
+                district: { type: string, example: Kumasi Metro }
+                adminName: { type: string, example: Scan Tester }
+                email: { type: string, format: email, example: scan-signup@example.com }
+                phone: { type: string, example: '0244000000' }
+                password: { type: string, example: not-a-real-password }
+                setupDefaults: { type: boolean, example: true }
+                acceptTerms: { type: boolean, example: true }
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '400': { $ref: '#/components/responses/Error' }, '409': { $ref: '#/components/responses/Error' } }
+  /api/signup/verify:
+    post:
+      tags: [saas]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [email, code], properties: { email: { type: string, format: email, example: scan-signup@example.com }, code: { type: string, example: '000000' } } }
+      responses: { '201': { $ref: '#/components/responses/Ok' }, '400': { $ref: '#/components/responses/Error' } }
+  /api/billing:
+    get: { tags: [saas], responses: { '200': { $ref: '#/components/responses/Ok' } } }
+  /api/billing/pay:
+    post: { tags: [saas], responses: { '200': { $ref: '#/components/responses/Ok' }, '503': { $ref: '#/components/responses/Error' } } }
+  /api/payments/paystack/verify/{reference}:
+    get:
+      tags: [saas]
+      parameters: [{ name: reference, in: path, required: true, schema: { type: string, example: SRS-abc123-0123456789 } }]
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '404': { $ref: '#/components/responses/Error' } }
+  /api/payments/paystack/webhook:
+    post:
+      tags: [saas]
+      security: []
+      summary: Paystack event (signed with x-paystack-signature)
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '401': { $ref: '#/components/responses/Error' } }
+  /api/superadmin/schools/{id}/billing:
+    put:
+      tags: [superadmin]
+      parameters: [{ $ref: '#/components/parameters/schoolIdPath' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                plan: { type: string, enum: [complimentary, trial, paid] }
+                trialEndsAt: { type: string, format: date }
+                paidUntil: { type: string, format: date }
+                smsMonthlyLimit: { type: integer, example: 500 }
+                paystackSubaccount: { type: string, example: ACCT_example }
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '403': { $ref: '#/components/responses/Error' } }
+  /api/superadmin/schools/{id}/payments:
+    post:
+      tags: [superadmin]
+      parameters: [{ $ref: '#/components/parameters/schoolIdPath' }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { amount: { type: number, example: 150 }, months: { type: integer, example: 4 }, reference: { type: string }, note: { type: string } } } } } }
+      responses: { '201': { $ref: '#/components/responses/Ok' }, '403': { $ref: '#/components/responses/Error' } }
+
 components:
   securitySchemes:
     bearer: { type: http, scheme: bearer, bearerFormat: JWT }
@@ -332,13 +665,17 @@ components:
     schoolIdParam:  { name: schoolId, in: path, required: true, schema: { type: string, format: uuid } }
     term: { name: term, in: path, required: true, schema: { type: string, enum: ['1', '2', '3'], example: '1' } }
     academicYear: { name: academicYear, in: query, schema: { type: string, example: 2026/2027 } }
+    termQuery: { name: term, in: query, schema: { type: string, enum: ['1', '2', '3'], example: '1' } }
+    dayQuery: { name: day, in: query, schema: { type: string, format: date } }
+    dayPath: { name: day, in: path, required: true, schema: { type: string, format: date, example: '2026-11-19' } }
+    genericIdPath: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
   schemas:
     UserInput:
       type: object
       properties:
         fullName: { type: string, example: Ama Owusu }
         email: { type: string, format: email, example: new.teacher@example.com }
-        role: { type: string, enum: [admin, head, teacher, student], example: teacher }
+        role: { type: string, enum: [admin, head, teacher, bursar, student], example: teacher }
         classId: { type: string, format: uuid }
         studentId: { type: string, format: uuid, description: Required for role student - the student this login is for }
         notes: { type: string }
@@ -356,6 +693,25 @@ components:
         gender: { type: string, enum: [M, F], example: M }
         dateOfBirth: { type: string, format: date, example: '2016-05-01' }
         classId: { type: string, format: uuid }
+        guardianName: { type: string, example: Mrs Akosua Mensah }
+        guardianPhone: { type: string, example: '0244000000' }
+        guardianPhone2: { type: string, example: '' }
+    Remarks:
+      type: object
+      properties:
+        conduct: { type: string, example: Very good }
+        attitude: { type: string, example: Hardworking }
+        interest: { type: string, example: Reading }
+        teacherRemark: { type: string, example: Excellent work. }
+        headRemark: { type: string, example: Keep it up. }
+        promotedTo: { type: string, example: Basic 6 }
+    FeeItemInput:
+      type: object
+      properties:
+        name: { type: string, example: Tuition }
+        amount: { type: number, example: 400 }
+        classId: { type: string, format: uuid }
+        term: { type: string, enum: ['1', '2', '3'] }
     ScoreValues:
       type: object
       properties: { classScore: { type: number, example: 25 }, examScore: { type: number, example: 70 } }

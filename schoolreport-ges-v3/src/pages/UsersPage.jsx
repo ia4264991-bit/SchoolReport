@@ -6,8 +6,8 @@ import { Card, SectionHeader, Button, Table, Tr, Td, Badge, Modal, Field, Input,
 import { UserPlus, Users, Trash2, Pencil, RotateCcw, Lock, Copy } from 'lucide-react'
 import toast from 'react-hot-toast'
 
-const ROLE_COLORS = { admin: 'blue', head: 'green', teacher: 'amber', student: 'gray' }
-const ROLE_LABELS = { admin: 'Admin', head: 'Head Teacher', teacher: 'Class Teacher', student: 'Student' }
+const ROLE_COLORS = { admin: 'blue', head: 'green', teacher: 'amber', bursar: 'blue', student: 'gray' }
+const ROLE_LABELS = { admin: 'Admin', head: 'Head Teacher', teacher: 'Class Teacher', bursar: 'Bursar / Accounts', student: 'Student' }
 
 export default function UsersPage() {
   const { classes, fetchClasses } = useSchoolStore()
@@ -229,7 +229,8 @@ export default function UsersPage() {
               <option value="admin">Admin</option>
               <option value="head">Head Teacher</option>
               <option value="teacher">Class Teacher</option>
-              <option value="student">Student / Parent</option>
+              <option value="bursar">Bursar / Accounts (fees only)</option>
+              <option value="student">Student (older pupils)</option>
             </Select>
           </Field>
           {(form.role === 'teacher' || form.role === 'student') && (

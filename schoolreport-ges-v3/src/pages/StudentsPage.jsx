@@ -3,9 +3,10 @@ import { useSearchParams } from 'react-router'
 import { useAuthStore } from '@/store/authStore'
 import { useSchoolStore } from '@/store/schoolStore'
 import api, { errorMessage } from '@/lib/api'
-import { formatDate } from '@/lib/format'
+import { formatDate, localPhone } from '@/lib/format'
+import ImportPupils from '@/components/students/ImportPupils'
 import { Card, SectionHeader, Button, Table, Tr, Td, Badge, Modal, Field, Input, Select, Spinner, EmptyState, Avatar, PageHeader } from '@/components/ui'
-import { UserPlus, Users, Trash2, Pencil } from 'lucide-react'
+import { UserPlus, Users, Trash2, Pencil, FileSpreadsheet } from 'lucide-react'
 import toast from 'react-hot-toast'
 
 export default function StudentsPage() {
@@ -24,7 +25,10 @@ export default function StudentsPage() {
   const [saving, setSaving] = useState(false)
   const [modal, setModal] = useState(false)
   const [editStudent, setEditStudent] = useState(null)
-  const [form, setForm] = useState({ fullName: '', gender: 'M', dateOfBirth: '', classId: '' })
+  const EMPTY = { fullName: '', gender: 'M', dateOfBirth: '', classId: '', guardianName: '', guardianPhone: '', guardianPhone2: '' }
+  const [form, setForm] = useState(EMPTY)
+  const [importing, setImporting] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
 
   useEffect(() => { fetchClasses() }, [])
 
@@ -35,17 +39,20 @@ export default function StudentsPage() {
       .then(r => setStudents(r.data))
       .catch((err) => toast.error(errorMessage(err, 'Failed to load students')))
       .finally(() => setLoading(false))
-  }, [selectedClass])
+  }, [selectedClass, reloadKey])
 
   const openAdd = () => {
     setEditStudent(null)
-    setForm({ fullName: '', gender: 'M', dateOfBirth: '', classId: selectedClass })
+    setForm({ ...EMPTY, classId: selectedClass })
     setModal(true)
   }
 
   const openEdit = (s) => {
     setEditStudent(s)
-    setForm({ fullName: s.fullName, gender: s.gender, dateOfBirth: s.dateOfBirth?.slice(0, 10) || '', classId: s.classId })
+    setForm({
+      fullName: s.fullName, gender: s.gender, dateOfBirth: s.dateOfBirth?.slice(0, 10) || '', classId: s.classId,
+      guardianName: s.guardianName || '', guardianPhone: localPhone(s.guardianPhone), guardianPhone2: localPhone(s.guardianPhone2),
+    })
     setModal(true)
   }
 
@@ -112,6 +119,11 @@ export default function StudentsPage() {
               {classes.map(c => <option key={c._id} value={c._id}>{c.name}</option>)}
             </Select>
           )}
+          {canDelete && (
+            <Button size="sm" onClick={() => setImporting(true)}>
+              <FileSpreadsheet className="w-3.5 h-3.5" /><span className="hidden sm:inline">Import from Excel</span><span className="sm:hidden">Import</span>
+            </Button>
+          )}
           <Button variant="primary" size="sm" onClick={openAdd} disabled={!selectedClass}>
             <UserPlus className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Add Student</span>
@@ -124,7 +136,7 @@ export default function StudentsPage() {
         ) : loading ? <Spinner /> : students.length === 0 ? (
           <EmptyState icon={Users} title="No students yet" description="Add students to this class to get started." />
         ) : (
-          <Table headers={['#', 'Name', 'Gender', 'DOB', '']}>
+          <Table headers={['#', 'Name', 'Gender', 'Parent phone', '']}>
             {students.map((s, i) => (
               <Tr key={s._id}>
                 <Td className="text-gray-400 w-8 text-xs">{i + 1}</Td>
@@ -139,8 +151,11 @@ export default function StudentsPage() {
                     {s.gender === 'M' ? 'Male' : 'Female'}
                   </Badge>
                 </Td>
-                <Td className="text-gray-400 text-xs hidden sm:table-cell">
-                  {s.dateOfBirth ? formatDate(s.dateOfBirth) : '—'}
+                <Td className="text-xs">
+                  {s.guardianPhone
+                    ? <span className="text-gray-600">{localPhone(s.guardianPhone)}{s.guardianPhone2 ? ` · ${localPhone(s.guardianPhone2)}` : ''}</span>
+                    : <span className="text-amber">none</span>}
+                  {s.dateOfBirth && <div className="text-[10px] text-gray-400">Born {formatDate(s.dateOfBirth)}</div>}
                 </Td>
                 <Td>
                   <div className="flex gap-1.5 justify-end">
@@ -178,6 +193,18 @@ export default function StudentsPage() {
           <Field label="Date of Birth">
             <Input type="date" value={form.dateOfBirth} onChange={e => setForm(f => ({ ...f, dateOfBirth: e.target.value }))} />
           </Field>
+          <div className="sm:col-span-2 mt-1 mb-2 text-xs font-bold text-gray-500 uppercase tracking-wide">Parent / guardian</div>
+          <div className="sm:col-span-2">
+            <Field label="Name">
+              <Input value={form.guardianName} maxLength={120} onChange={e => setForm(f => ({ ...f, guardianName: e.target.value }))} placeholder="e.g. Mrs Akosua Mensah" />
+            </Field>
+          </div>
+          <Field label="Phone (parent signs in with it)">
+            <Input type="tel" value={form.guardianPhone} onChange={e => setForm(f => ({ ...f, guardianPhone: e.target.value }))} placeholder="024 412 3456" />
+          </Field>
+          <Field label="Second phone (optional)">
+            <Input type="tel" value={form.guardianPhone2} onChange={e => setForm(f => ({ ...f, guardianPhone2: e.target.value }))} placeholder="020 111 2223" />
+          </Field>
           {!isTeacher && (
             <div className="sm:col-span-2">
               <Field label="Class">
@@ -190,6 +217,11 @@ export default function StudentsPage() {
           )}
         </div>
       </Modal>
+
+      {importing && (
+        <ImportPupils open onClose={() => setImporting(false)} classes={classes} defaultClassId={selectedClass}
+          onDone={() => { setReloadKey((k) => k + 1); fetchClasses() }} />
+      )}
     </div>
   )
 }

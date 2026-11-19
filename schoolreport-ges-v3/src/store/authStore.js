@@ -1,12 +1,13 @@
 import { create } from 'zustand'
 import api from '@/lib/api'
+import { clearOfflineData } from '@/lib/offline'
 
 const storedUser = (() => {
   try { return JSON.parse(localStorage.getItem('ges_user')) } catch { return null }
 })()
 
-/** Where a user lands after signing in: the superadmin has no school dashboard. */
-export const homePath = (user) => (user?.role === 'superadmin' ? '/superadmin' : '/dashboard')
+/** Where a user lands after signing in. */
+export const homePath = (user) => ({ superadmin: '/superadmin', parent: '/parent', bursar: '/fees' }[user?.role] || '/dashboard')
 
 export const useAuthStore = create((set, get) => ({
   user:  storedUser,
@@ -30,9 +31,17 @@ export const useAuthStore = create((set, get) => ({
     }
   },
 
+  /** Parent (SMS code) and self sign-up logins hand back a token and user directly. */
+  setSession: (token, user) => {
+    localStorage.setItem('ges_token', token)
+    localStorage.setItem('ges_user', JSON.stringify(user))
+    set({ user, token, error: null })
+  },
+
   logout: () => {
     localStorage.removeItem('ges_token')
     localStorage.removeItem('ges_user')
+    clearOfflineData()
     set({ user: null, token: null })
   },
 

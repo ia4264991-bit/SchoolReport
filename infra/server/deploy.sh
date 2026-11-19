@@ -83,6 +83,20 @@ unset MASTER
     echo "SMTP_PASS=$(jq -r .password <<<"$SMTP")"
     echo "EMAIL_FROM=$(cfg emailFrom)"
   fi
+  # SMS to parents (absence alerts, notices, results, fee reminders, parent sign-in codes).
+  echo "SMS_PROVIDER=$(cfg smsProvider)"
+  if [ -n "$(cfg smsSenderId)" ]; then echo "SMS_SENDER_ID=$(cfg smsSenderId)"; fi
+  if [ -n "$(cfg smsSecretArn)" ]; then
+    echo "SMS_API_KEY=$(jq -r .apiKey <<<"$(secret "$(cfg smsSecretArn)")")"
+  fi
+  # Online payment (Paystack) and subscription prices.
+  if [ -n "$(cfg paystackSecretArn)" ]; then
+    echo "PAYSTACK_SECRET_KEY=$(jq -r .secretKey <<<"$(secret "$(cfg paystackSecretArn)")")"
+  fi
+  if [ -n "$(cfg pricePerPupil)" ]; then echo "PRICE_PER_PUPIL_GHS=$(cfg pricePerPupil)"; fi
+  if [ -n "$(cfg minTermPrice)" ]; then echo "MIN_TERM_PRICE_GHS=$(cfg minTermPrice)"; fi
+  if [ -n "$(cfg trialDays)" ]; then echo "TRIAL_DAYS=$(cfg trialDays)"; fi
+  if [ -n "$(cfg subscriptionTermMonths)" ]; then echo "SUBSCRIPTION_TERM_MONTHS=$(cfg subscriptionTermMonths)"; fi
 } >"$APP_ENV"
 
 start() {

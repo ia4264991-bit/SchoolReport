@@ -24,9 +24,12 @@ api.interceptors.response.use(
   (err) => {
     const sentToken = Boolean(err.config?.headers?.Authorization)
     if (err.response?.status === 401 && sentToken) {
+      let wasParent = false
+      try { wasParent = JSON.parse(localStorage.getItem('ges_user'))?.role === 'parent' } catch { /* ignore */ }
       localStorage.removeItem('ges_token')
       localStorage.removeItem('ges_user')
-      if (window.location.pathname !== '/login') window.location.href = '/login'
+      const target = wasParent ? '/parent-login' : '/login'
+      if (window.location.pathname !== target) window.location.href = target
     }
     return Promise.reject(err)
   }

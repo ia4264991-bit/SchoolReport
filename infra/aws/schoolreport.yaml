@@ -81,6 +81,44 @@ Parameters:
     Type: String
     Default: ''
     Description: Optional. e.g. "SchoolReport GES" <no-reply@your-domain>
+  SmsProvider:
+    Type: String
+    Default: log
+    AllowedValues: [log, arkesel]
+    Description: SMS to parents. log = nothing is sent (only logged); arkesel = Arkesel (needs SmsSecretArn and SmsSenderId).
+  SmsSenderId:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[A-Za-z0-9 ]{1,11}$'
+    Description: Optional. Sender name parents see (registered with the SMS provider), max 11 letters/digits.
+  SmsSecretArn:
+    Type: String
+    Default: ''
+    Description: Optional. Secrets Manager secret {"apiKey":"..."} of the SMS provider.
+  PaystackSecretArn:
+    Type: String
+    Default: ''
+    Description: Optional. Secrets Manager secret {"secretKey":"sk_live_..."}; turns on online payment (subscriptions; school fees where a school has a subaccount).
+  PricePerPupil:
+    Type: String
+    Default: '5'
+    AllowedPattern: '^[0-9]+(\.[0-9]{1,2})?$'
+    Description: Subscription price per pupil per term, in GHS.
+  MinTermPrice:
+    Type: String
+    Default: '150'
+    AllowedPattern: '^[0-9]+(\.[0-9]{1,2})?$'
+    Description: Lowest subscription price per term, in GHS.
+  TrialDays:
+    Type: String
+    Default: '30'
+    AllowedPattern: '^[0-9]{1,3}$'
+    Description: Free trial length for schools that sign themselves up.
+  SubscriptionTermMonths:
+    Type: String
+    Default: '4'
+    AllowedPattern: '^([1-9]|1[0-2])$'
+    Description: Months one subscription payment covers.
   WebAclArn:
     Type: String
     Default: ''
@@ -98,6 +136,8 @@ Parameters:
 
 Conditions:
   HasSmtp: !Not [!Equals [!Ref SmtpSecretArn, '']]
+  HasSms: !Not [!Equals [!Ref SmsSecretArn, '']]
+  HasPaystack: !Not [!Equals [!Ref PaystackSecretArn, '']]
   HasWebAcl: !Not [!Equals [!Ref WebAclArn, '']]
   HasDomain: !Not [!Equals [!Ref DomainName, '']]
   HasApiDomain: !And [!Condition HasDomain, !Not [!Equals [!Ref ApiCertificateArn, '']]]
@@ -394,7 +434,10 @@ Resources:
            "appDbSecretArn":"${AppDbPasswordSecret}","jwtSecretArn":"${JwtSecret}",
            "originSecretArn":"${OriginVerifySecret}","superadminSecretArn":"${SuperadminPasswordSecret}",
            "superadminEmail":"${SuperadminEmail}","frontendUrl":"${FrontendUrl}","corsOrigins":"${CorsOrigins}",
-           "smtpSecretArn":"${SmtpSecretArn}","smtpHost":"${SmtpHost}","emailFrom":"${EmailFromJson}"}
+           "smtpSecretArn":"${SmtpSecretArn}","smtpHost":"${SmtpHost}","emailFrom":"${EmailFromJson}",
+           "smsProvider":"${SmsProvider}","smsSenderId":"${SmsSenderId}","smsSecretArn":"${SmsSecretArn}",
+           "paystackSecretArn":"${PaystackSecretArn}","pricePerPupil":"${PricePerPupil}","minTermPrice":"${MinTermPrice}",
+           "trialDays":"${TrialDays}","subscriptionTermMonths":"${SubscriptionTermMonths}"}
         - EmailFromJson: !Join ['\"', !Split ['"', !Ref EmailFrom]]
 
   # ── API server ───────────────────────────────────────────────────────────
@@ -427,6 +470,8 @@ Resources:
                   - !Ref SuperadminPasswordSecret
                   - !GetAtt Database.MasterUserSecret.SecretArn
                   - !If [HasSmtp, !Ref SmtpSecretArn, !Ref AWS::NoValue]
+                  - !If [HasSms, !Ref SmsSecretArn, !Ref AWS::NoValue]
+                  - !If [HasPaystack, !Ref PaystackSecretArn, !Ref AWS::NoValue]
               - Sid: ReadConfig
                 Effect: Allow
                 Action: ssm:GetParameter

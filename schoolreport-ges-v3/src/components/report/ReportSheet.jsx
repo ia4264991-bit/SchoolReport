@@ -1,119 +1,108 @@
-import { formatDate } from '@/lib/format'
-import { gradeInfo } from '@/lib/grading'
+import { formatDate, ordinal } from '@/lib/format'
 
 /**
- * The printable GES terminal report sheet — used by staff (Reports) and by students
- * (My Report). Inline styles on purpose: they print the same in every browser.
+ * The printable terminal report — for staff (one or a whole class), parents and pupils.
+ * `report` is the API's class context ({ school, class, academicYear, term, subjects,
+ * weights, gradingScale, classSize }) and `card` one pupil's card. Inline styles on
+ * purpose: they print the same in every browser. Each sheet starts on a new page.
  */
-export default function ReportSheet({
-  settings, logoUrl, studentName, className, academicYear, term,
-  rows, totalMark, avgMark, position, classSize,
-}) {
-  const overall = gradeInfo(avgMark)
+const cell = { border: '1px solid #555', padding: '4px 6px' }
+const line = { borderBottom: '0.5px solid #bbb', paddingBottom: '2px' }
+
+export default function ReportSheet({ report, card, logoUrl }) {
+  const { school, class: cls, academicYear, term, weights, gradingScale, classSize } = report
+  const r = card.remarks
+  const att = card.attendance
   return (
     <div className="report-sheet" style={{
-      background: '#fff', color: '#111', border: '1px solid #ccc',
-      borderRadius: '6px', padding: '24px',
-      fontFamily: "'Times New Roman', Times, serif",
-      fontSize: '12px', maxWidth: '820px', margin: '0 auto',
-      boxShadow: '0 2px 12px rgba(0,0,0,0.08)'
+      background: '#fff', color: '#111', border: '1px solid #ccc', borderRadius: '6px', padding: '22px',
+      fontFamily: "'Times New Roman', Times, serif", fontSize: '12px', maxWidth: '820px', margin: '0 auto 16px',
+      boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
     }}>
       {/* Header */}
-      <div style={{ textAlign: 'center', borderBottom: '2.5px solid #222', paddingBottom: '10px', marginBottom: '14px', position: 'relative', minHeight: logoUrl ? '84px' : undefined,
-        // keep a long school name clear of the logo
-        paddingLeft: logoUrl ? '88px' : undefined, paddingRight: logoUrl ? '88px' : undefined }}>
-        {logoUrl && (
-          <img src={logoUrl} alt="School logo"
-            style={{ position: 'absolute', left: 0, top: 0, width: '80px', height: '80px', objectFit: 'contain' }} />
-        )}
-        <div style={{ fontSize: '10px', letterSpacing: '1.5px', color: '#444', marginBottom: '3px' }}>GHANA EDUCATION SERVICE</div>
-        <h1 style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '2px' }}>
-          {settings?.schoolName || 'SCHOOL NAME'}
-        </h1>
-        <div style={{ fontSize: '12px' }}>
-          {[
-            settings?.circuit && `${settings.circuit} Circuit`,
-            settings?.district && `${settings.district} District`,
-            settings?.region && `${settings.region} Region`,
-          ].filter(Boolean).join(' — ')}
+      <div style={{ textAlign: 'center', borderBottom: '2.5px solid #222', paddingBottom: '8px', marginBottom: '10px', position: 'relative',
+        minHeight: logoUrl ? '80px' : undefined, paddingLeft: logoUrl ? '86px' : undefined, paddingRight: logoUrl ? '86px' : undefined }}>
+        {logoUrl && <img src={logoUrl} alt="School logo" style={{ position: 'absolute', left: 0, top: 0, width: '76px', height: '76px', objectFit: 'contain' }} />}
+        <div style={{ fontSize: '10px', letterSpacing: '1.5px', color: '#444', marginBottom: '2px' }}>GHANA EDUCATION SERVICE</div>
+        <h1 style={{ fontSize: '18px', fontWeight: 'bold', margin: '0 0 2px' }}>{school.name}</h1>
+        <div style={{ fontSize: '11px' }}>
+          {[school.circuit && `${school.circuit} Circuit`, school.district && `${school.district} District`, school.region && `${school.region} Region`].filter(Boolean).join(' — ')}
         </div>
-        <div style={{ fontSize: '13px', fontWeight: 'bold', marginTop: '6px' }}>STUDENT TERMINAL REPORT — TERM {term}</div>
+        <div style={{ fontSize: '13px', fontWeight: 'bold', marginTop: '5px' }}>PUPIL'S TERMINAL REPORT — TERM {term}, {academicYear}</div>
       </div>
 
-      {/* Meta */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 20px', marginBottom: '12px', fontSize: '11px' }}>
-        {[
-          [`Student's Name: ${studentName}`, `Class: ${className || ''}`],
-          [`Academic Year: ${academicYear || ''}`, `Term: Term ${term}`],
-          [`Position: ${position} out of ${classSize}`, `Total Students: ${classSize}`],
-          [
-            `Next Term Begins: ${settings?.nextTermDate ? formatDate(settings.nextTermDate) : '—'}`,
-            `Head Teacher: ${settings?.headTeacher || ''}`,
-          ],
-        ].flat().map((t, i) => (
-          <span key={i} style={{ borderBottom: '0.5px solid #bbb', paddingBottom: '2px' }}>{t}</span>
-        ))}
+      {/* Pupil */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: '3px 18px', marginBottom: '10px', fontSize: '11px' }}>
+        <span style={line}>Name: <b>{card.student.fullName}</b></span>
+        <span style={line}>Class: <b>{cls.name}</b></span>
+        <span style={line}>Position in class: <b>{ordinal(card.position)}</b> out of {classSize}</span>
+        <span style={line}>Number on roll: {classSize}</span>
+        <span style={line}>Attendance: <b>{att.present}</b> out of {att.total} day{att.total === 1 ? '' : 's'}</span>
+        <span style={line}>Next term begins: {school.nextTermDate ? formatDate(school.nextTermDate) : '—'}</span>
+        {r.promotedTo && <span style={line}>Promoted to: <b>{r.promotedTo}</b></span>}
       </div>
 
-      {/* Stats */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: '8px', marginBottom: '12px' }}>
-        {[
-          [totalMark.toFixed(1), 'Total Marks'],
-          [avgMark.toFixed(1) + '%', 'Average'],
-          [position, 'Position'],
-          [overall.grade, 'Grade'],
-          [overall.remark, 'Remark'],
-        ].map(([val, lbl]) => (
-          <div key={lbl} style={{ border: '1.5px solid #444', padding: '6px', textAlign: 'center', borderRadius: '3px' }}>
-            <div style={{ fontSize: '15px', fontWeight: 'bold' }}>{val}</div>
-            <div style={{ fontSize: '9px', color: '#555' }}>{lbl}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* Scores Table */}
-      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '12px', fontSize: '11px' }}>
+      {/* Marks */}
+      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '8px', fontSize: '11px' }}>
         <thead>
           <tr>
-            {['Subject', 'Class Score\n(40%)', 'Exam Score\n(60%)', 'Total\n(100%)', 'Grade', 'Remark'].map(h => (
-              <th key={h} style={{ border: '1px solid #555', padding: '5px 7px', background: '#e8e8e8', fontWeight: 'bold', textAlign: 'center', whiteSpace: 'pre' }}>{h}</th>
+            {['Subject', `Class score\n(${weights.classScore}%)`, `Exam score\n(${weights.exam}%)`, 'Total\n(100%)', 'Position', 'Grade', 'Remark'].map((h) => (
+              <th key={h} style={{ ...cell, background: '#e8e8e8', fontWeight: 'bold', textAlign: 'center', whiteSpace: 'pre' }}>{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {rows.map(r => (
-            <tr key={r.subject}>
-              <td style={{ border: '1px solid #555', padding: '5px 7px', fontWeight: '500' }}>{r.subject}</td>
-              <td style={{ border: '1px solid #555', padding: '5px 7px', textAlign: 'center' }}>{r.csConverted.toFixed(1)}</td>
-              <td style={{ border: '1px solid #555', padding: '5px 7px', textAlign: 'center' }}>{r.esConverted.toFixed(1)}</td>
-              <td style={{ border: '1px solid #555', padding: '5px 7px', textAlign: 'center', fontWeight: 'bold' }}>{r.total.toFixed(1)}</td>
-              <td style={{ border: '1px solid #555', padding: '5px 7px', textAlign: 'center', fontWeight: 'bold' }}>{r.grade}</td>
-              <td style={{ border: '1px solid #555', padding: '5px 7px', textAlign: 'center' }}>{r.remark}</td>
+          {card.rows.map((row) => (
+            <tr key={row.subjectId}>
+              <td style={{ ...cell, fontWeight: 500 }}>{row.subject}</td>
+              <td style={{ ...cell, textAlign: 'center' }}>{row.hasScore ? row.classScoreWeighted.toFixed(1) : '—'}</td>
+              <td style={{ ...cell, textAlign: 'center' }}>{row.hasScore ? row.examScoreWeighted.toFixed(1) : '—'}</td>
+              <td style={{ ...cell, textAlign: 'center', fontWeight: 'bold' }}>{row.hasScore ? row.total.toFixed(1) : '—'}</td>
+              <td style={{ ...cell, textAlign: 'center' }}>{row.hasScore ? ordinal(row.position) : '—'}</td>
+              <td style={{ ...cell, textAlign: 'center', fontWeight: 'bold' }}>{row.hasScore ? row.grade : '—'}</td>
+              <td style={{ ...cell, textAlign: 'center' }}>{row.hasScore ? row.remark : ''}</td>
             </tr>
           ))}
+          <tr>
+            <td style={{ ...cell, fontWeight: 'bold' }}>Total / Average</td>
+            <td style={cell} /><td style={cell} />
+            <td style={{ ...cell, textAlign: 'center', fontWeight: 'bold' }}>{card.totalMark.toFixed(1)}</td>
+            <td style={{ ...cell, textAlign: 'center', fontWeight: 'bold' }}>{ordinal(card.position)}</td>
+            <td style={{ ...cell, textAlign: 'center', fontWeight: 'bold' }}>{card.grade}</td>
+            <td style={{ ...cell, textAlign: 'center' }}>Average {card.average.toFixed(1)}%</td>
+          </tr>
         </tbody>
       </table>
 
-      {/* Remarks */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '10px' }}>
-        {["Class Teacher's Remarks", "Head Teacher's Remarks"].map(lbl => (
-          <div key={lbl} style={{ border: '1px solid #555', padding: '8px', minHeight: '55px' }}>
-            <label style={{ fontWeight: 'bold', fontSize: '10px', display: 'block', marginBottom: '4px' }}>{lbl}:</label>
-            <div style={{ borderBottom: '1px dashed #aaa', marginTop: '20px' }}></div>
+      {/* Conduct and remarks */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '6px 14px', fontSize: '11px', marginBottom: '8px' }}>
+        <span style={line}>Conduct: {r.conduct || ''}</span>
+        <span style={line}>Attitude: {r.attitude || ''}</span>
+        <span style={line}>Interest: {r.interest || ''}</span>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '8px' }}>
+        {[["Class teacher's remarks", r.teacherRemark], ["Head teacher's remarks", r.headRemark]].map(([label, text]) => (
+          <div key={label} style={{ border: '1px solid #555', padding: '6px 8px', minHeight: '48px' }}>
+            <div style={{ fontWeight: 'bold', fontSize: '10px', marginBottom: '3px' }}>{label}:</div>
+            <div style={{ fontSize: '11px' }}>{text}</div>
           </div>
         ))}
       </div>
 
       {/* Signatures */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '20px', marginTop: '10px', fontSize: '10px' }}>
-        {["Class Teacher's Signature", "Head Teacher's Signature", "Parent/Guardian's Signature"].map(lbl => (
-          <div key={lbl} style={{ borderTop: '1px solid #333', paddingTop: '3px', textAlign: 'center' }}>{lbl}</div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '18px', marginTop: '18px', fontSize: '10px' }}>
+        {["Class teacher's signature", `Head teacher${school.headTeacher ? ` (${school.headTeacher})` : ''}`, "Parent / guardian's signature"].map((l) => (
+          <div key={l} style={{ borderTop: '1px solid #333', paddingTop: '3px', textAlign: 'center' }}>{l}</div>
         ))}
       </div>
 
-      {/* Footer */}
-      <div style={{ marginTop: '10px', borderTop: '1px solid #bbb', paddingTop: '6px', fontSize: '9px', textAlign: 'center', color: '#555' }}>
-        Generated by SchoolReport GES — Ghana Education Service Automated Report System
+      {/* Grading key */}
+      <div style={{ marginTop: '10px', borderTop: '1px solid #bbb', paddingTop: '5px', fontSize: '9px', color: '#444' }}>
+        <b>Grading:</b>{' '}
+        {gradingScale.map((b, i) => {
+          const top = i === 0 ? 100 : gradingScale[i - 1].min - 0.1
+          return `${b.grade} ${b.min}–${Number.isInteger(top) ? top : top.toFixed(1)}${b.remark ? ` (${b.remark})` : ''}`
+        }).join(' · ')}
       </div>
     </div>
   )

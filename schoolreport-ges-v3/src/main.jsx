@@ -5,6 +5,11 @@ import { Toaster } from 'react-hot-toast'
 import App from './App.jsx'
 import './styles/globals.css'
 
+// Lets the app open without network (offline registers). Production builds only.
+if ('serviceWorker' in navigator && import.meta.env.PROD) {
+  window.addEventListener('load', () => { navigator.serviceWorker.register('/sw.js').catch(() => {}) })
+}
+
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <BrowserRouter>

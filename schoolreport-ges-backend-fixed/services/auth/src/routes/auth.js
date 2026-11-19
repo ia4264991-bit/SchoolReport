@@ -97,7 +97,8 @@ router.post('/login', loginIpLimiter, loginAccountLimiter, ah(async (req, res) =
 /* GET /api/auth/me — fresh copy of the signed-in user */
 router.get('/me', requireAuthAllowPasswordChange, ah(async (req, res) => {
   const { rows } = await query(`SELECT ${USER_COLUMNS} FROM users WHERE id = $1`, [req.user.id])
-  res.json(userToApi(rows[0]))
+  // The school's trial / subscription state, so the app can warn before it ends.
+  res.json({ ...userToApi(rows[0]), subscription: req.user.subscription ?? null })
 }))
 
 /* POST /api/auth/change-password (also the forced first-login change) */

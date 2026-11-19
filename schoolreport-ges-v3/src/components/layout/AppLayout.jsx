@@ -1,11 +1,13 @@
-import { Outlet, useNavigate, useLocation } from 'react-router'
+import { Outlet, useNavigate, useLocation, Link } from 'react-router'
+import toast from 'react-hot-toast'
+import { syncRegisters } from '@/lib/offline'
 import { useAuthStore } from '@/store/authStore'
 import { useSchoolStore } from '@/store/schoolStore'
 import { useEffect, useState } from 'react'
 import {
   Shield, LogOut, LayoutDashboard, Users, BookOpen,
   ClipboardList, FileText, Settings, GraduationCap,
-  Building2, Menu, X, ChevronRight
+  Building2, Menu, X, ChevronRight, ClipboardCheck, Wallet, Megaphone, Printer, CreditCard
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -14,26 +16,36 @@ const ROLE_BADGE = {
   admin:      'bg-blue-light text-blue',
   head:       'bg-green-light text-green',
   teacher:    'bg-amber-light text-amber',
+  bursar:     'bg-blue-light text-blue',
   student:    'bg-gray-100 text-gray-600',
+  parent:     'bg-green-light text-green',
 }
 const ROLE_LABEL = {
   superadmin: 'Super Admin',
   admin:      'School Admin',
   head:       'Head Teacher',
   teacher:    'Class Teacher',
+  bursar:     'Bursar',
   student:    'Student',
+  parent:     'Parent',
 }
 
 function getNavItems(role) {
   const all = [
     { path: '/superadmin', icon: Building2,      label: 'Platform Control', roles: ['superadmin'] },
+    { path: '/parent',     icon: Users,            label: 'My Children',     roles: ['parent'] },
     { path: '/dashboard',  icon: LayoutDashboard, label: 'Dashboard',       roles: ['admin','head','teacher','student'] },
+    { path: '/attendance', icon: ClipboardCheck,  label: 'Attendance',      roles: ['admin','head','teacher'] },
     { path: '/classes',    icon: GraduationCap,   label: 'Classes',         roles: ['admin','head'] },
     { path: '/students',   icon: Users,            label: 'Students',        roles: ['admin','head','teacher'] },
     { path: '/scores',     icon: BookOpen,         label: 'Score Entry',     roles: ['admin','head','teacher'] },
     { path: '/reports',    icon: FileText,         label: 'Reports',         roles: ['admin','head','teacher'] },
+    { path: '/printouts',  icon: Printer,          label: 'End of Term',     roles: ['admin','head','teacher','bursar'] },
+    { path: '/fees',       icon: Wallet,           label: 'School Fees',     roles: ['admin','head','bursar'] },
+    { path: '/messages',   icon: Megaphone,        label: 'Messages',        roles: ['admin','head'] },
     { path: '/my-report',  icon: FileText,         label: 'My Report',       roles: ['student'] },
     { path: '/users',      icon: ClipboardList,    label: 'User Mgmt',       roles: ['admin'] },
+    { path: '/billing',    icon: CreditCard,       label: 'Billing',         roles: ['admin','head'] },
     { path: '/settings',   icon: Settings,         label: 'Settings',        roles: ['admin','head'] },
   ]
   return all.filter(n => n.roles.includes(role))
@@ -116,12 +128,27 @@ export default function AppLayout() {
     // Pick up role/class changes an admin made since this browser last signed in.
     refreshUser()
     if (user?.role !== 'superadmin') fetchSettings()
+    // Registers taken without network go out as soon as the phone is online again.
+    const send = () => syncRegisters().then((r) => {
+      if (r.sent) toast.success(`${r.sent} register(s) taken offline have been sent.`)
+      r.failed.forEach((f) => toast.error(`Register for ${f.className} was not accepted: ${f.error}`, { duration: 8000 }))
+    }).catch(() => {})
+    send()
+    window.addEventListener('online', send)
+    return () => window.removeEventListener('online', send)
   }, [])
+
+  const sub = user?.subscription
+  const showSubBanner = sub && ['admin', 'head'].includes(user?.role) &&
+    (sub.status !== 'active' || (sub.daysLeft != null && sub.daysLeft <= 7))
 
   useEffect(() => { setDrawerOpen(false) }, [location.pathname])
 
   // Clear the school's data too, so the next person on this computer never sees it.
-  const handleLogout = () => { logout(); resetSchool(); navigate('/login') }
+  const handleLogout = () => {
+    const wasParent = user?.role === 'parent'
+    logout(); resetSchool(); navigate(wasParent ? '/parent-login' : '/login')
+  }
   const handleNav = (path) => { navigate(path); setDrawerOpen(false) }
 
   return (
@@ -215,6 +242,17 @@ export default function AppLayout() {
         {/* ── MAIN CONTENT ── */}
         <main className="flex-1 overflow-auto">
           <div className="p-4 sm:p-5 lg:p-6 max-w-screen-xl mx-auto">
+            {showSubBanner && (
+              <div className={clsx('no-print mb-4 px-4 py-3 rounded-xl text-[13px] border flex flex-wrap items-center justify-between gap-2',
+                sub.status === 'locked' ? 'bg-red-light text-[#A32D2D] border-[#F09595]' : 'bg-amber-light text-amber border-[#FAC775]')}>
+                <span>
+                  {sub.status === 'locked' && 'Your subscription has ended: the school is read-only (you can still view and print).'}
+                  {sub.status === 'grace' && 'Your subscription has ended. Everything still works for a few more days — please renew.'}
+                  {sub.status === 'active' && `Your ${sub.daysLeft <= 0 ? 'plan ends today' : `plan ends in ${sub.daysLeft} day(s)`}.`}
+                </span>
+                <Link to="/billing" className="font-bold underline">Go to Billing</Link>
+              </div>
+            )}
             <Outlet />
           </div>
         </main>

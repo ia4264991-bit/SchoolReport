@@ -3,6 +3,7 @@ import { useSchoolStore } from '@/store/schoolStore'
 import { useAuthStore } from '@/store/authStore'
 import api, { errorMessage } from '@/lib/api'
 import { prepareLogo, LOGO_ACCEPT } from '@/lib/logo'
+import GradingEditor from '@/components/settings/GradingEditor'
 import { Card, SectionHeader, Button, Field, Input, Select, Table, Tr, Td, Modal, Spinner, Alert, PageHeader } from '@/components/ui'
 import { Save, Plus, Trash2, BookOpen, GraduationCap, Settings, ImagePlus, Building2 } from 'lucide-react'
 
@@ -193,6 +194,8 @@ export default function SettingsPage() {
         </div>
       </Card>
 
+      <GradingEditor settings={settings} onSaved={fetchSettings} />
+
       {/* Subjects */}
       <Card>
         <SectionHeader title="📚 Subjects">
@@ -265,7 +268,7 @@ export default function SettingsPage() {
       {/* Max Marks Modal */}
       <Modal open={marksModal} onClose={() => setMarksModal(false)} title="Max Class Score Per Subject"
         footer={<><Button onClick={() => setMarksModal(false)}>Cancel</Button><Button variant="primary" onClick={saveMaxMarks}>Save</Button></>}>
-        <Alert variant="info">Enter the max raw mark for Class Score per subject. System converts it to 40%.</Alert>
+        <Alert variant="info">Enter the raw mark each subject's class score is out of. It is converted to the class-score share set under Grading ({settings?.classScoreWeight ?? 40}%).</Alert>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3">
           {subjects.map(sub => (
             <Field key={sub._id} label={sub.name}>

@@ -1,16 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useSchoolStore } from '@/store/schoolStore'
 import api, { errorMessage } from '@/lib/api'
-import { ordinal, buildRows, summarize } from '@/lib/grading'
 import ReportSheet from '@/components/report/ReportSheet'
 import { Card, SectionHeader, Button, Select, Spinner, EmptyState, PageHeader } from '@/components/ui'
 import { FileText, Printer } from 'lucide-react'
 
 /**
- * A student login's own report (also what a parent sees when signed in with it).
- * The API returns only this student's marks plus their position — never classmates' data.
+ * A pupil's own terminal report (student logins), or one child's (parents pass studentId).
+ * The API returns only this pupil's card — never classmates' marks.
  */
-export default function MyReportPage() {
+export function ChildReport({ studentId }) {
   const { settings, logoUrl } = useSchoolStore()
   const [term, setTerm] = useState(settings?.term || '1')
   const termTouched = useRef(false)
@@ -18,73 +17,46 @@ export default function MyReportPage() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
 
-  // Start on the school's current term once settings arrive (unless already changed).
-  useEffect(() => {
-    if (settings?.term && !termTouched.current) setTerm(settings.term)
-  }, [settings?.term])
+  useEffect(() => { if (settings?.term && !termTouched.current) setTerm(settings.term) }, [settings?.term])
 
   useEffect(() => {
     setLoading(true)
     setError('')
-    api.get('/reports/me', { params: { term } })
+    api.get('/reports/me', { params: { term, ...(studentId ? { studentId } : {}) } })
       .then((r) => setData(r.data))
-      .catch((err) => { setData(null); setError(errorMessage(err, 'Could not load your report.')) })
+      .catch((err) => { setData(null); setError(errorMessage(err, 'Could not load the report.')) })
       .finally(() => setLoading(false))
-  }, [term])
+  }, [term, studentId])
 
-  const report = useMemo(() => {
-    if (!data) return null
-    const byId = new Map(data.scores.map((s) => [s.subjectId, s]))
-    const maxById = new Map(data.subjects.map((s) => [s._id, s.maxClassScore]))
-    const rows = buildRows(data.subjects, (id) => byId.get(id), (id) => maxById.get(id))
-    return { rows, ...summarize(rows) }
-  }, [data])
-
-  const changeTerm = (t) => { termTouched.current = true; setTerm(t) }
-
+  const hasMarks = data?.card?.subjectsScored > 0
   return (
     <div>
       <div className="no-print">
-        <PageHeader title="My Report" subtitle="Your terminal report — print or save it as PDF" />
         <Card>
-          <SectionHeader title={data ? `${data.student.fullName} · ${data.class.name} · ${data.academicYear}` : 'Term'}>
-            <div className="flex gap-2">
-              <Select className="w-32" value={term} onChange={(e) => changeTerm(e.target.value)} aria-label="Term">
-                <option value="1">Term 1</option>
-                <option value="2">Term 2</option>
-                <option value="3">Term 3</option>
-              </Select>
-              {data && (
-                <Button variant="primary" onClick={() => window.print()}>
-                  <Printer className="w-3.5 h-3.5" /> Print
-                </Button>
-              )}
-            </div>
+          <SectionHeader title={data ? `${data.card.student.fullName} · ${data.class.name} · ${data.academicYear}` : 'Report'}>
+            <Select className="w-28" value={term} onChange={(e) => { termTouched.current = true; setTerm(e.target.value) }} aria-label="Term">
+              <option value="1">Term 1</option><option value="2">Term 2</option><option value="3">Term 3</option>
+            </Select>
+            {hasMarks && <Button variant="primary" onClick={() => window.print()}><Printer className="w-3.5 h-3.5" /> Print</Button>}
           </SectionHeader>
           {loading ? <Spinner /> : error ? (
             <EmptyState icon={FileText} title="Report not available" description={error} />
-          ) : data && data.scores.length === 0 ? (
+          ) : data && !hasMarks ? (
             <EmptyState icon={FileText} title="No marks yet for this term"
-              description="Your teachers have not entered any marks for this term yet. Check back later or choose another term." />
+              description="The teachers have not entered marks for this term yet. Check back later or choose another term." />
           ) : null}
         </Card>
       </div>
+      {!loading && hasMarks && <ReportSheet report={data} card={data.card} logoUrl={logoUrl} />}
+    </div>
+  )
+}
 
-      {!loading && data && report && data.scores.length > 0 && (
-        <ReportSheet
-          settings={settings}
-          logoUrl={logoUrl}
-          studentName={data.student.fullName}
-          className={data.class.name}
-          academicYear={data.academicYear}
-          term={data.term}
-          rows={report.rows}
-          totalMark={report.totalMark}
-          avgMark={report.avg}
-          position={ordinal(data.position)}
-          classSize={data.classSize}
-        />
-      )}
+export default function MyReportPage() {
+  return (
+    <div>
+      <div className="no-print"><PageHeader title="My Report" subtitle="Your terminal report — print it or save it as PDF" /></div>
+      <ChildReport />
     </div>
   )
 }

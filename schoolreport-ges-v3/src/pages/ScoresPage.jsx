@@ -101,12 +101,14 @@ export default function ScoresPage() {
   }
 
   const maxFor = (subjectId) => maxMarks[subjectId] || 100
+  // The school's class-score share (Settings → Grading); the exam gives the rest.
+  const csWeight = settings?.classScoreWeight ?? 40
 
   const calcTotal = (studentId, subjectId) => {
     const entry = scores[studentId]?.[subjectId]
     if (!entry || ((entry.classScore ?? '') === '' && (entry.examScore ?? '') === '')) return '—'
-    const csConverted = (parseFloat(entry.classScore || 0) / maxFor(subjectId)) * 40
-    const esConverted = (parseFloat(entry.examScore || 0) / 100) * 60
+    const csConverted = (parseFloat(entry.classScore || 0) / maxFor(subjectId)) * csWeight
+    const esConverted = (parseFloat(entry.examScore || 0) / 100) * (100 - csWeight)
     return (csConverted + esConverted).toFixed(1)
   }
 
@@ -153,7 +155,7 @@ export default function ScoresPage() {
   if (isTeacher && !user?.classId) {
     return (
       <div>
-        <PageHeader title="Score Entry" subtitle="Class Score (40%) + Exam Score (60%) = Total" />
+        <PageHeader title="Score Entry" subtitle={`Class Score (${settings?.classScoreWeight ?? 40}%) + Exam Score (${100 - (settings?.classScoreWeight ?? 40)}%) = Total`} />
         <Card><EmptyState icon={BookOpen} title="No class assigned" description="Ask your school admin to assign you a class." /></Card>
       </div>
     )
@@ -161,7 +163,7 @@ export default function ScoresPage() {
 
   return (
     <div>
-      <PageHeader title="Score Entry" subtitle="Class Score (40%) + Exam Score (60%) = Total" />
+      <PageHeader title="Score Entry" subtitle={`Class Score (${settings?.classScoreWeight ?? 40}%) + Exam Score (${100 - (settings?.classScoreWeight ?? 40)}%) = Total`} />
 
       <Alert variant="info">
         📌 Class Score uses your configured max mark per subject. Exam score is always out of 100.

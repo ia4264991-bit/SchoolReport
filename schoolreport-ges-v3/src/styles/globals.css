@@ -78,12 +78,21 @@
 @media print {
   .no-print { display: none !important; }
   body { background: #fff; font-size: 11px; }
-  .report-sheet {
+  .report-sheet, .print-sheet {
     border: none !important;
     box-shadow: none !important;
     padding: 0 !important;
+    margin: 0 !important;
     max-width: 100% !important;
+    overflow: visible !important;
+    /* one report / sheet per page when printing a whole class */
+    break-after: page;
+    break-inside: avoid;
   }
+  .report-sheet:last-child, .print-sheet:last-child { break-after: auto; }
+  /* wide sheets (broadsheet, register) on a landscape page */
+  .print-landscape { page: landscape; }
   @page { margin: 1.2cm; }
+  @page landscape { size: A4 landscape; margin: 1cm; }
 }
 
